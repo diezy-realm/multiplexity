@@ -1,0 +1,8 @@
+{"name":"session-anonymous","method":"GET","path":"/api/auth/session"}
+{"name":"credential-provider","method":"GET","path":"/api/auth/providers"}
+{"name":"vms-authentication","method":"GET","path":"/api/vms"}
+{"name":"databases-authentication","method":"GET","path":"/api/databases"}
+{"name":"snippets-authentication","method":"GET","path":"/api/snippets"}
+{"name":"artifacts-authentication","method":"GET","path":"/api/artifacts"}
+{"name":"appearance-authentication","method":"GET","path":"/api/appearance"}
+{"name":"account-authentication","method":"GET","path":"/api/account"}

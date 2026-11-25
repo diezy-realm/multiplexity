@@ -1,0 +1,76 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+.next-dev/
+.local-dev/
+out/
+
+# Build
+dist/
+build/
+desktop-dist/
+release/
+.test-artifacts/
+.test-tmp/
+rust/target/
+src-tauri/target/
+src-tauri/gen/
+rust/app-cases/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Database
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Debug logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# TypeScript
+*.tsbuildinfo
+
+# Test coverage
+coverage/
+
+# Kiro
+.kiro/
+
+# Docs (ignore general docs, keep product & research docs)
+docs/*
+!docs/product/
+!docs/research/
+
+# Markdown (ignore all except README and product/research docs)
+*.md
+!README.md
+!**/product/**/*.md
+!**/research/**/*.md
+
+# Temp & log files
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+*.log
+*.orig
+*.rej
+tmp/
+temp/

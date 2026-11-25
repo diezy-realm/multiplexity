@@ -1,0 +1,27 @@
+[package]
+name = "multiplexity-desktop"
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.97"
+description = "Multiplexity desktop host"
+license = "UNLICENSED"
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+open = "5"
+multiplexity-backend = { path = "../rust/app" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+
+[lints.rust]
+unsafe_code = "forbid"

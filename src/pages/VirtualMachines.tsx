@@ -1,0 +1,1173 @@
+'use client';
+import { PageActions } from '@/components/PageHeader';
+
+
+import { useState, useEffect, useCallback, useMemo } from 'react';
+import { lazy } from 'react';
+import { getTabDisplayTitle, type TerminalTab } from '@/components/terminal-utils';
+import { useVMStatusPolling } from '@/hooks/useVMStatusPolling';
+import { useCardOrder } from '@/hooks/useCardOrder';
+
+const TerminalPanel = lazy(() => import('@/components/TerminalPanel'));
+
+const LogViewer = lazy(() => import('@/components/LogViewer'));
+
+const ServicesModal = lazy(() => import('@/components/ServicesModal'));
+
+import VMResourceBar from '@/components/VMResourceBar';
+
+interface VM {
+  id: string;
+  label: string;
+  host: string;
+  port: number;
+  username: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface VMWithStatus extends VM {
+  status: 'online' | 'offline' | 'unreachable';
+}
+
+interface AddVMFormData {
+  label: string;
+  host: string;
+  port: string;
+  username: string;
+  password: string;
+}
+
+const initialFormData: AddVMFormData = {
+  label: '',
+  host: '',
+  port: '22',
+  username: '',
+  password: '',
+};
+
+function StatusIndicator({ status }: { status: 'online' | 'offline' | 'unreachable' }) {
+  const colorMap = {
+    online: 'bg-green-500',
+    offline: 'bg-red-500',
+    unreachable: 'bg-yellow-500',
+  };
+
+  const labelMap = {
+    online: 'Online',
+    offline: 'Offline',
+    unreachable: 'Unreachable',
+  };
+
+  return (
+    <span className="flex items-center gap-2">
+      <span
+        className={`inline-block w-3 h-3 rounded-full ${colorMap[status]}`}
+        aria-label={`Status: ${labelMap[status]}`}
+      />
+      <span className="text-sm text-gray-500 dark:text-gray-400">{labelMap[status]}</span>
+    </span>
+  );
+}
+
+function VMCard({
+  vm,
+  activeTabCount = 0,
+  onConnect,
+  onNewTab,
+  onEdit,
+  onDelete,
+  onNotes,
+  onServices,
+}: {
+  vm: VMWithStatus;
+  activeTabCount?: number;
+  onConnect: (vm: VMWithStatus) => void;
+  onNewTab?: (vm: VMWithStatus) => void;
+  onEdit: (vm: VMWithStatus) => void;
+  onDelete: (vm: VMWithStatus) => void;
+  onNotes: (vm: VMWithStatus) => void;
+  onServices: (vm: VMWithStatus) => void;
+}) {
+  return (
+    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 hover:border-gray-300 dark:hover:border-gray-600 transition-colors">
+      <div className="flex items-start justify-between mb-3">
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 truncate">{vm.label}</h3>
+        <StatusIndicator status={vm.status} />
+      </div>
+
+      <div className="space-y-1 text-sm text-gray-500 dark:text-gray-400">
+        <p>
+          <span className="text-gray-400 dark:text-gray-500">Host:</span>{' '}
+          <span className="text-gray-700 dark:text-gray-300 font-mono">{vm.host}</span>
+        </p>
+        <p>
+          <span className="text-gray-400 dark:text-gray-500">Port:</span>{' '}
+          <span className="text-gray-700 dark:text-gray-300 font-mono">{vm.port}</span>
+        </p>
+        <p>
+          <span className="text-gray-400 dark:text-gray-500">User:</span>{' '}
+          <span className="text-gray-700 dark:text-gray-300">{vm.username}</span>
+        </p>
+      </div>
+
+      {/* VM Resource Monitoring Bar */}
+      <VMResourceBar vmId={vm.id} isOnline={vm.status === 'online'} />
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button
+          onClick={() => onConnect(vm)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-white bg-green-600 hover:bg-green-700 rounded-md transition-colors"
+          aria-label={`Connect to ${vm.label}`}
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+          </svg>
+          {activeTabCount > 0 ? 'Terminal' : 'Connect'}
+        </button>
+        <button
+          onClick={() => onServices(vm)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-blue-700 dark:text-blue-200 bg-blue-100 dark:bg-blue-900/50 hover:bg-blue-200 dark:hover:bg-blue-800 rounded-md transition-colors"
+          aria-label={`Services for ${vm.label}`}
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01" />
+          </svg>
+          Services
+        </button>
+        <button
+          onClick={() => onNotes(vm)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-yellow-700 dark:text-yellow-200 bg-yellow-100 dark:bg-yellow-900/50 hover:bg-yellow-200 dark:hover:bg-yellow-800 rounded-md transition-colors"
+          aria-label={`Notes for ${vm.label}`}
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+          Notes
+        </button>
+        <button
+          onClick={() => onEdit(vm)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-gray-700 dark:text-gray-200 bg-gray-200 dark:bg-gray-600 hover:bg-gray-300 dark:hover:bg-gray-500 rounded-md transition-colors"
+          aria-label={`Edit ${vm.label}`}
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+          Edit
+        </button>
+        <button
+          onClick={() => onDelete(vm)}
+          className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-600 dark:text-red-300 bg-red-100 dark:bg-red-900/50 hover:bg-red-200 dark:hover:bg-red-800 rounded-md transition-colors"
+          aria-label={`Delete ${vm.label}`}
+        >
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+          Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AddVMModal({
+  isOpen,
+  onClose,
+  onSubmit,
+  isSubmitting,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  onSubmit: (data: AddVMFormData) => void;
+  isSubmitting: boolean;
+}) {
+  const [formData, setFormData] = useState<AddVMFormData>(initialFormData);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (isOpen) {
+      setFormData(initialFormData);
+      setError('');
+    }
+  }, [isOpen]);
+
+  if (!isOpen) return null;
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+
+    if (!formData.label.trim()) {
+      setError('Label is required');
+      return;
+    }
+    if (!formData.host.trim()) {
+      setError('Host is required');
+      return;
+    }
+    if (!formData.username.trim()) {
+      setError('Username is required');
+      return;
+    }
+    if (!formData.password.trim()) {
+      setError('Password is required');
+      return;
+    }
+
+    const port = parseInt(formData.port, 10);
+    if (isNaN(port) || port < 1 || port > 65535) {
+      setError('Port must be between 1 and 65535');
+      return;
+    }
+
+    onSubmit(formData);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 md:p-4">
+      <div
+        className="fixed inset-0 bg-black/60"
+        onClick={onClose}
+        aria-hidden="true"
+      />
+      <div className="relative w-full max-w-md bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-4 md:p-6 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Add New VM</h2>
+          <button
+            onClick={onClose}
+            className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200"
+            aria-label="Close modal"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label htmlFor="vm-label" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Label
+            </label>
+            <input
+              id="vm-label"
+              type="text"
+              value={formData.label}
+              onChange={(e) => setFormData({ ...formData, label: e.target.value })}
+              className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="e.g. Production Server"
+              disabled={isSubmitting}
+            />
+          </div>
+
+          <div>
+            <label htmlFor="vm-host" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Host
+            </label>
+            <input
+              id="vm-host"
+              type="text"
+              value={formData.host}
+              onChange={(e) => setFormData({ ...formData, host: e.target.value })}
+              className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="e.g. 192.168.1.100"
+              disabled={isSubmitting}
+            />
+          </div>
+
+          <div>
+            <label htmlFor="vm-port" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Port
+            </label>
+            <input
+              id="vm-port"
+              type="number"
+              min="1"
+              max="65535"
+              value={formData.port}
+              onChange={(e) => setFormData({ ...formData, port: e.target.value })}
+              className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="22"
+              disabled={isSubmitting}
+            />
+          </div>
+
+          <div>
+            <label htmlFor="vm-username" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Username
+            </label>
+            <input
+              id="vm-username"
+              type="text"
+              value={formData.username}
+              onChange={(e) => setFormData({ ...formData, username: e.target.value })}
+              className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="e.g. root"
+              disabled={isSubmitting}
+            />
+          </div>
+
+          <div>
+            <label htmlFor="vm-password" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Password
+            </label>
+            <input
+              id="vm-password"
+              type="password"
+              value={formData.password}
+              onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+              className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              placeholder="Enter password"
+              disabled={isSubmitting}
+            />
+          </div>
+
+          {error && (
+            <div role="alert" className="text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md px-3 py-2">
+              {error}
+            </div>
+          )}
+
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={isSubmitting}
+              className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-md transition-colors disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isSubmitting}
+              className="flex-1 px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 disabled:cursor-not-allowed rounded-md transition-colors"
+            >
+              {isSubmitting ? 'Adding...' : 'Add VM'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+function EditVMModal({
+  vm,
+  onClose,
+  onSubmit,
+}: {
+  vm: VMWithStatus;
+  onClose: () => void;
+  onSubmit: (data: { label: string; host: string; port: number; username: string; password: string }) => void;
+}) {
+  const [label, setLabel] = useState(vm.label);
+  const [host, setHost] = useState(vm.host);
+  const [port, setPort] = useState(String(vm.port));
+  const [username, setUsername] = useState(vm.username);
+  const [password, setPassword] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await onSubmit({
+        label: label.trim(),
+        host: host.trim(),
+        port: parseInt(port, 10) || 22,
+        username: username.trim(),
+        password: password,
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="fixed inset-0 bg-black/60" onClick={onClose} aria-hidden="true" />
+      <div className="relative w-full max-w-md bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-6 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Edit VM</h2>
+          <button onClick={onClose} className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200" aria-label="Close">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Label</label>
+            <input
+              type="text"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Host</label>
+            <input
+              type="text"
+              value={host}
+              onChange={(e) => setHost(e.target.value)}
+              className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Port</label>
+            <input
+              type="number"
+              min="1"
+              max="65535"
+              value={port}
+              onChange={(e) => setPort(e.target.value)}
+              className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Username</label>
+            <input
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              required
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+              Password <span className="text-gray-400 dark:text-gray-500">(kosongkan jika tidak ingin ganti)</span>
+            </label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              className="w-full px-3 py-2 bg-gray-50 dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="flex gap-3 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-md transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="flex-1 px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-800 rounded-md transition-colors"
+            >
+              {saving ? 'Saving...' : 'Save Changes'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+export default function DashboardPage() {
+  const [vms, setVms] = useState<VMWithStatus[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
+  const [activeTerminalTabId, setActiveTerminalTabId] = useState<string | null>(null);
+  const [isSplitView, setIsSplitView] = useState(false);
+  const [splitTerminalTabId, setSplitTerminalTabId] = useState<string | null>(null);
+  const [focusedPane, setFocusedPane] = useState<'left' | 'right'>('left');
+  const [isFullscreenTerminal, setIsFullscreenTerminal] = useState(false);
+  const [cardsCollapsed, setCardsCollapsed] = useState(false);
+  const [logViewerVm, setLogViewerVm] = useState<VMWithStatus | null>(null);
+  const [servicesVm, setServicesVm] = useState<VMWithStatus | null>(null);
+  const [editVm, setEditVm] = useState<VMWithStatus | null>(null);
+  const [deleteVm, setDeleteVm] = useState<VMWithStatus | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  useEffect(() => { if (terminalTabs.length === 0) setCardsCollapsed(false); }, [terminalTabs.length]);
+
+  // Keyboard shortcut: Escape to exit fullscreen terminal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && isFullscreenTerminal) {
+        setIsFullscreenTerminal(false);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isFullscreenTerminal]);
+
+  const fetchVMs = useCallback(async () => {
+    try {
+      const res = await fetch('/api/vms');
+      if (!res.ok) {
+        throw new Error('Failed to fetch VMs');
+      }
+      const data: VM[] = await res.json();
+
+      // Fetch status for each VM
+      const vmsWithStatus: VMWithStatus[] = await Promise.all(
+        data.map(async (vm) => {
+          try {
+            const statusRes = await fetch(`/api/vms/${vm.id}/status`);
+            if (statusRes.ok) {
+              const statusData = await statusRes.json();
+              return { ...vm, status: statusData.status };
+            }
+          } catch {
+            // Ignore status fetch errors
+          }
+          return { ...vm, status: 'offline' as const };
+        })
+      );
+
+      setVms(vmsWithStatus);
+      setError('');
+    } catch {
+      setError('Failed to load VM list');
+    } finally {
+      setIsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchVMs();
+  }, [fetchVMs]);
+
+  // Extract VM IDs for status polling
+  const vmIds = useMemo(() => vms.map((vm) => vm.id), [vms]);
+
+  // Real-time status polling via API (60s interval) and Socket.IO events
+  const { statusMap } = useVMStatusPolling({
+    vmIds,
+    enabled: vmIds.length > 0,
+  });
+
+  // Merge real-time status updates with the VM list
+  const vmsWithLiveStatus = useMemo<VMWithStatus[]>(() => {
+    if (statusMap.size === 0) return vms;
+    return vms.map((vm) => {
+      const liveStatus = statusMap.get(vm.id);
+      if (liveStatus) {
+        return { ...vm, status: liveStatus.status };
+      }
+      return vm;
+    });
+  }, [vms, statusMap]);
+
+  const cardOrder = useCardOrder('vm-cards', vmsWithLiveStatus);
+
+  const handleConnect = useCallback((vm: VMWithStatus, initialCommand?: string, forceNewTab?: boolean) => {
+    setCardsCollapsed(true);
+    // If not forcing a new tab, check if a tab for this VM already exists
+    if (!forceNewTab) {
+      const existingTab = terminalTabs.find(tab => tab.vmId === vm.id);
+      if (existingTab) {
+        // Tab already exists, activate it
+        if (isSplitView && focusedPane === 'right') {
+          setSplitTerminalTabId(existingTab.id);
+        } else {
+          setActiveTerminalTabId(existingTab.id);
+        }
+        if (initialCommand) {
+          setTerminalTabs(prev =>
+            prev.map(tab =>
+              tab.id === existingTab.id
+                ? { ...tab, pendingCommand: { command: initialCommand, timestamp: Date.now() } }
+                : tab
+            )
+          );
+        }
+        return;
+      }
+    }
+
+    // Create a new terminal tab (generates unique ID)
+    const newTab: TerminalTab = {
+      id: `${vm.id}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      vmId: vm.id,
+      vmLabel: vm.label,
+      pendingCommand: initialCommand ? { command: initialCommand, timestamp: Date.now() } : undefined,
+    };
+
+    setTerminalTabs(prev => [...prev, newTab]);
+    if (isSplitView && focusedPane === 'right') {
+      setSplitTerminalTabId(newTab.id);
+    } else {
+      setActiveTerminalTabId(newTab.id);
+    }
+  }, [terminalTabs, isSplitView, focusedPane]);
+
+  const handleNewTab = useCallback((vm: VMWithStatus) => {
+    handleConnect(vm, undefined, true);
+  }, [handleConnect]);
+
+  const handleCloseTab = useCallback((tabId: string) => {
+    setTerminalTabs(prev => {
+      const remaining = prev.filter(tab => tab.id !== tabId);
+
+      // If closing the active tab (Left pane)
+      if (activeTerminalTabId === tabId) {
+        const idx = prev.findIndex(t => t.id === tabId);
+        const nextActive = remaining.find(t => t.id !== splitTerminalTabId) 
+          || remaining[Math.min(idx, Math.max(0, remaining.length - 1))];
+        setActiveTerminalTabId(nextActive ? nextActive.id : null);
+      }
+
+      // If closing the split tab (Right pane)
+      if (splitTerminalTabId === tabId) {
+        const nextSplit = remaining.find(t => t.id !== activeTerminalTabId && t.id !== tabId);
+        if (nextSplit) {
+          setSplitTerminalTabId(nextSplit.id);
+        } else {
+          setSplitTerminalTabId(null);
+          setIsSplitView(false);
+        }
+      } else if (remaining.length < 2 && isSplitView) {
+        setIsSplitView(false);
+        setSplitTerminalTabId(null);
+      }
+
+      return remaining;
+    });
+  }, [activeTerminalTabId, splitTerminalTabId, isSplitView]);
+
+  const handleToggleSplit = useCallback(() => {
+    setIsSplitView(prev => {
+      const next = !prev;
+      if (next) {
+        // When activating split view, ensure right pane has a tab
+        if (!splitTerminalTabId || splitTerminalTabId === activeTerminalTabId) {
+          const otherTab = terminalTabs.find(t => t.id !== activeTerminalTabId);
+          if (otherTab) {
+            setSplitTerminalTabId(otherTab.id);
+          } else if (activeTerminalTabId) {
+            // Only 1 tab exists: automatically create Tab #2 for the same VM!
+            const currentTab = terminalTabs.find(t => t.id === activeTerminalTabId);
+            if (currentTab) {
+              const vm = vmsWithLiveStatus.find(v => v.id === currentTab.vmId);
+              if (vm) {
+                const newTab: TerminalTab = {
+                  id: `${vm.id}-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+                  vmId: vm.id,
+                  vmLabel: vm.label,
+                };
+                setTerminalTabs(prevTabs => [...prevTabs, newTab]);
+                setSplitTerminalTabId(newTab.id);
+              }
+            }
+          }
+        }
+      }
+      return next;
+    });
+  }, [splitTerminalTabId, activeTerminalTabId, terminalTabs, vmsWithLiveStatus]);
+
+  const handleSelectTabForPane = useCallback((pane: 'left' | 'right', tabId: string) => {
+    if (pane === 'left') {
+      setActiveTerminalTabId(tabId);
+    } else {
+      setSplitTerminalTabId(tabId);
+    }
+  }, []);
+
+  const handleAddNewTabFromBar = useCallback(() => {
+    if (activeTerminalTabId) {
+      const currentTab = terminalTabs.find(t => t.id === activeTerminalTabId);
+      if (currentTab) {
+        const vm = vmsWithLiveStatus.find(v => v.id === currentTab.vmId);
+        if (vm) {
+          handleNewTab(vm);
+          return;
+        }
+      }
+    }
+    const firstVm = vmsWithLiveStatus.find(v => v.status === 'online') || vmsWithLiveStatus[0];
+    if (firstVm) {
+      handleNewTab(firstVm);
+    }
+  }, [activeTerminalTabId, terminalTabs, vmsWithLiveStatus, handleNewTab]);
+
+  const handleViewLogs = useCallback((vm: VMWithStatus) => {
+    setLogViewerVm(vm);
+  }, []);
+
+  const handleCloseLogViewer = useCallback(() => {
+    setLogViewerVm(null);
+  }, []);
+
+  const handleOpenServices = useCallback((vm: VMWithStatus) => {
+    setServicesVm(vm);
+  }, []);
+
+  const handleCloseServices = useCallback(() => {
+    setServicesVm(null);
+  }, []);
+
+  const handleEdit = useCallback((vm: VMWithStatus) => {
+    setEditVm(vm);
+  }, []);
+
+  const handleDelete = useCallback((vm: VMWithStatus) => {
+    setDeleteVm(vm);
+  }, []);
+
+  // Notes state
+  const [notesVm, setNotesVm] = useState<VMWithStatus | null>(null);
+  const [notesText, setNotesText] = useState('');
+
+  const handleOpenNotes = useCallback((vm: VMWithStatus) => {
+    setNotesVm(vm);
+    const saved = localStorage.getItem(`vm-notes-${vm.id}`) || '';
+    setNotesText(saved);
+  }, []);
+
+  const handleSaveNotes = useCallback(() => {
+    if (!notesVm) return;
+    localStorage.setItem(`vm-notes-${notesVm.id}`, notesText);
+    setNotesVm(null);
+  }, [notesVm, notesText]);
+
+  const handleConfirmDelete = useCallback(async () => {
+    if (!deleteVm) return;
+    setIsDeleting(true);
+    try {
+      const res = await fetch(`/api/vms/${deleteVm.id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setDeleteVm(null);
+        // Remove terminal tabs for this VM
+        setTerminalTabs(prev => prev.filter(tab => tab.vmId !== deleteVm.id));
+        await fetchVMs();
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsDeleting(false);
+    }
+  }, [deleteVm, fetchVMs]);
+
+  const handleEditSubmit = useCallback(async (data: { label: string; host: string; port: number; username: string; password: string }) => {
+    if (!editVm) return;
+    const body: any = {};
+    if (data.label !== editVm.label) body.label = data.label;
+    if (data.host !== editVm.host) body.host = data.host;
+    if (data.port !== editVm.port) body.port = data.port;
+    if (data.username !== editVm.username) body.username = data.username;
+    if (data.password) body.password = data.password;
+
+    if (Object.keys(body).length === 0) {
+      setEditVm(null);
+      return;
+    }
+
+    const res = await fetch(`/api/vms/${editVm.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (res.ok) {
+      setEditVm(null);
+      await fetchVMs();
+    }
+  }, [editVm, fetchVMs]);
+
+  async function handleAddVM(formData: AddVMFormData) {
+    setIsSubmitting(true);
+    try {
+      const res = await fetch('/api/vms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          label: formData.label.trim(),
+          host: formData.host.trim(),
+          port: parseInt(formData.port, 10),
+          username: formData.username.trim(),
+          password: formData.password,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Failed to add VM');
+      }
+
+      setIsModalOpen(false);
+      await fetchVMs();
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col h-full">
+      {/* VM list section */}
+      <div className={`${terminalTabs.length > 0 ? 'flex-shrink-0' : 'flex-1'}`}>
+        {/* Page header */}
+        <PageActions>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setCardsCollapsed(value => !value)}
+              aria-expanded={!cardsCollapsed} aria-controls="vm-card-grid"
+              aria-label={cardsCollapsed ? 'Tampilkan Virtual Machines' : 'Sembunyikan Virtual Machines'}
+              className="p-2 rounded-md text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800 focus-visible:ring-2 focus-visible:ring-blue-500">
+              <svg className={`w-5 h-5 transition-transform ${cardsCollapsed ? '-rotate-90' : ''}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="m6 9 6 6 6-6" /></svg>
+            </button>
+
+            {cardsCollapsed && <span className="text-xs text-gray-500">{vms.length}</span>}
+          </div>
+          <button
+            onClick={() => setIsModalOpen(true)}
+            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+          >
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+            </svg>
+            Add VM
+          </button>
+        </PageActions>
+
+        {/* Error state */}
+        {error && (
+          <div role="alert" className="mb-4 text-sm text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-800 rounded-md px-4 py-3">
+            {error}
+          </div>
+        )}
+
+        {/* Loading state */}
+        {isLoading && (
+          <div className="flex items-center justify-center py-12">
+            <div className="text-gray-500 dark:text-gray-400">Loading VMs...</div>
+          </div>
+        )}
+
+        {/* Empty state */}
+        {!isLoading && !error && vms.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-12 text-center">
+            <svg className="w-16 h-16 text-gray-400 dark:text-gray-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2" />
+            </svg>
+            <p className="text-gray-500 dark:text-gray-400 mb-2">No VMs configured yet</p>
+            <p className="text-sm text-gray-400 dark:text-gray-500">Click &quot;Add VM&quot; to get started</p>
+          </div>
+        )}
+
+        {/* VM grid */}
+        {cardOrder.error && <p role="status" className="text-xs text-amber-600 dark:text-amber-400 mb-2">{cardOrder.error}</p>}
+        {!cardsCollapsed && !isLoading && vms.length > 0 && (
+          <div id="vm-card-grid" className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+            {cardOrder.ordered.map((vm) => (
+              <div key={vm.id} {...cardOrder.dropProps(vm.id)} className={`relative rounded-lg ${cardOrder.dragging === vm.id ? 'opacity-40' : ''}`}>
+                <button type="button" {...cardOrder.handleProps(vm.id, vm.label)} className="absolute -top-2 left-3 z-10 cursor-grab active:cursor-grabbing rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 text-gray-500 focus-visible:ring-2 focus-visible:ring-blue-500">⠿</button>
+              <VMCard
+                vm={vm}
+                activeTabCount={terminalTabs.filter(t => t.vmId === vm.id).length}
+                onConnect={handleConnect}
+                onNewTab={handleNewTab}
+                onServices={handleOpenServices}
+                onEdit={handleEdit}
+                onDelete={handleDelete}
+                onNotes={handleOpenNotes}
+              />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Terminal panel */}
+      {terminalTabs.length > 0 && (
+        <div
+          className={`${
+            isFullscreenTerminal
+              ? 'fixed inset-0 z-50 bg-gray-950 flex flex-col p-2'
+              : 'flex-1 min-h-[300px] md:min-h-[360px] mt-4 flex flex-col'
+          }`}
+        >
+          {/* VM Terminal Tabs & Toolbar - always visible */}
+          <div className="flex items-center justify-between bg-gray-800 border border-gray-700 rounded-t-lg overflow-x-auto flex-shrink-0 select-none">
+            {/* Tabs List */}
+            <div className="flex items-center min-w-0 flex-1 overflow-x-auto">
+              {terminalTabs.map((tab) => {
+                const isLeftActive = activeTerminalTabId === tab.id;
+                const isRightActive = isSplitView && splitTerminalTabId === tab.id;
+                const isSelected = isLeftActive || isRightActive;
+
+                return (
+                  <div
+                    key={tab.id}
+                    onClick={() => {
+                      if (isSplitView) {
+                        if (focusedPane === 'right') {
+                          setSplitTerminalTabId(tab.id);
+                        } else {
+                          setActiveTerminalTabId(tab.id);
+                        }
+                      } else {
+                        setActiveTerminalTabId(tab.id);
+                      }
+                    }}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 text-xs cursor-pointer border-r border-gray-700 min-w-0 transition-colors ${
+                      isSelected
+                        ? 'bg-gray-900 text-white border-b-2 border-b-green-500 font-medium'
+                        : 'text-gray-400 hover:text-white hover:bg-gray-700'
+                    }`}
+                    title={tab.vmLabel}
+                  >
+                    <svg className="w-3.5 h-3.5 flex-shrink-0 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    <span className="truncate max-w-[120px]">{getTabDisplayTitle(tab, terminalTabs)}</span>
+
+                    {/* Split pane badge indicator */}
+                    {isSplitView && isLeftActive && (
+                      <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-blue-900 text-blue-200">L</span>
+                    )}
+                    {isSplitView && isRightActive && (
+                      <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-green-900 text-green-200">R</span>
+                    )}
+
+                    {/* Duplicate tab button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        const vm = vmsWithLiveStatus.find(v => v.id === tab.vmId);
+                        if (vm) handleNewTab(vm);
+                      }}
+                      className="ml-0.5 text-gray-500 hover:text-green-400 p-0.5 rounded hover:bg-gray-700 flex-shrink-0"
+                      title="Buka tab baru untuk VM ini"
+                      aria-label={`Open another tab for ${tab.vmLabel}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                    </button>
+
+                    {/* Close tab button */}
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        handleCloseTab(tab.id);
+                      }}
+                      className="text-gray-500 hover:text-red-400 p-0.5 rounded hover:bg-gray-700 flex-shrink-0"
+                      aria-label={`Close terminal for ${tab.vmLabel}`}
+                    >
+                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
+                  </div>
+                );
+              })}
+
+              {/* Add New Tab Button (+) */}
+              <button
+                onClick={handleAddNewTabFromBar}
+                className="px-2.5 py-1.5 text-xs text-gray-400 hover:text-white hover:bg-gray-700 transition-colors flex items-center gap-1 border-r border-gray-700 flex-shrink-0"
+                title="Buka tab terminal baru (+)"
+                aria-label="Add new terminal tab"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                </svg>
+                <span className="hidden sm:inline text-[11px] font-medium">Tab</span>
+              </button>
+            </div>
+
+            {/* Right toolbar controls: Split View & Fullscreen */}
+            <div className="flex items-center gap-1.5 px-2 flex-shrink-0">
+              {/* Split view toggle */}
+              <button
+                onClick={handleToggleSplit}
+                className={`flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                  isSplitView
+                    ? 'bg-blue-600 text-white shadow-sm'
+                    : 'text-gray-400 hover:text-white hover:bg-gray-700'
+                }`}
+                title={isSplitView ? 'Kembali ke Single View' : 'Split Terminal Berdampingan (Dual Pane)'}
+                aria-label="Toggle split view"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 3v18m12-18v18M3 3h18v18H3V3z" />
+                </svg>
+                <span className="hidden md:inline">{isSplitView ? 'Dual Pane' : 'Split'}</span>
+              </button>
+
+              {/* Fullscreen toggle */}
+              <button
+                onClick={() => setIsFullscreenTerminal(prev => !prev)}
+                className={`flex items-center gap-1 px-2.5 py-1 text-xs font-medium rounded transition-colors ${
+                  isFullscreenTerminal
+                    ? 'bg-purple-600 text-white shadow-sm'
+                    : 'text-gray-400 hover:text-white hover:bg-gray-700'
+                }`}
+                title={isFullscreenTerminal ? 'Keluar Fullscreen (Esc)' : 'Fullscreen Terminal (Maximize)'}
+                aria-label="Toggle fullscreen terminal"
+              >
+                {isFullscreenTerminal ? (
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                ) : (
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                  </svg>
+                )}
+                <span className="hidden md:inline">{isFullscreenTerminal ? 'Exit' : 'Full'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Terminal content */}
+          <div className="flex-1 min-h-0">
+            <TerminalPanel
+              tabs={terminalTabs}
+              activeTabId={activeTerminalTabId}
+              onCloseTab={handleCloseTab}
+              isSplit={isSplitView}
+              splitTabId={splitTerminalTabId}
+              focusedPane={focusedPane}
+              onFocusPane={setFocusedPane}
+              onSelectTabForPane={handleSelectTabForPane}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Log viewer panel */}
+      {logViewerVm && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center p-2 md:p-4">
+          <div
+            className="fixed inset-0 bg-black/60"
+            onClick={handleCloseLogViewer}
+            aria-hidden="true"
+          />
+          <div className="relative w-full max-w-full md:max-w-3xl lg:max-w-4xl h-[85vh] md:h-[80vh] z-50">
+            <LogViewer
+              vmId={logViewerVm.id}
+              vmLabel={logViewerVm.label}
+              onClose={handleCloseLogViewer}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Services Modal */}
+      {servicesVm && (
+        <ServicesModal
+          vmId={servicesVm.id}
+          vmLabel={servicesVm.label}
+          vmHost={servicesVm.host}
+          onClose={handleCloseServices}
+          onOpenTerminal={(cmd) => {
+            handleConnect(servicesVm, cmd);
+            handleCloseServices();
+            if (typeof window !== 'undefined') {
+              setTimeout(() => {
+                window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+              }, 100);
+            }
+          }}
+        />
+      )}
+
+      {/* Add VM Modal */}
+      <AddVMModal
+        isOpen={isModalOpen}
+        onClose={() => setIsModalOpen(false)}
+        onSubmit={handleAddVM}
+        isSubmitting={isSubmitting}
+      />
+
+      {/* Edit VM Modal */}
+      {editVm && (
+        <EditVMModal
+          vm={editVm}
+          onClose={() => setEditVm(null)}
+          onSubmit={handleEditSubmit}
+        />
+      )}
+
+      {/* Delete Confirmation */}
+      {deleteVm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60" onClick={() => setDeleteVm(null)} aria-hidden="true" />
+          <div className="relative w-full max-w-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-6">
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-2">Delete VM</h2>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              Yakin ingin menghapus <span className="text-gray-900 dark:text-white font-medium">{deleteVm.label}</span>? Aksi ini tidak bisa di-undo.
+            </p>
+            <div className="flex gap-3">
+              <button
+                onClick={() => setDeleteVm(null)}
+                disabled={isDeleting}
+                className="flex-1 px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-md transition-colors"
+              >
+                Batal
+              </button>
+              <button
+                onClick={handleConfirmDelete}
+                disabled={isDeleting}
+                className="flex-1 px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 disabled:bg-red-800 rounded-md transition-colors"
+              >
+                {isDeleting ? 'Deleting...' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* VM Notes Modal */}
+      {notesVm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="fixed inset-0 bg-black/60" onClick={() => setNotesVm(null)} aria-hidden="true" />
+          <div className="relative w-full max-w-lg bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg shadow-xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                📝 Notes — {notesVm.label}
+              </h2>
+              <button
+                onClick={() => setNotesVm(null)}
+                className="p-1 rounded hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-400"
+                aria-label="Close"
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
+              Catat aplikasi apa saja yang ada di VM ini. Tersimpan di browser per user.
+            </p>
+            <textarea
+              value={notesText}
+              onChange={(e) => setNotesText(e.target.value)}
+              placeholder="Contoh:&#10;- App Golang (beedle-epay) port 8080&#10;- MySQL 8.0&#10;- Redis&#10;- Nginx reverse proxy"
+              className="w-full h-[200px] px-3 py-2 text-sm bg-gray-50 dark:bg-gray-900 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none font-mono"
+            />
+            <div className="flex items-center justify-end gap-3 mt-4">
+              <button
+                onClick={() => setNotesVm(null)}
+                className="px-4 py-2 text-sm font-medium text-gray-700 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-md transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveNotes}
+                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+              >
+                Save Notes
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}

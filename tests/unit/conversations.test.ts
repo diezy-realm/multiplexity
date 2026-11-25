@@ -1,0 +1,73 @@
+import { afterEach,beforeEach,expect,it,vi } from 'vitest';
+import Database from 'better-sqlite3';
+import { mkdtempSync,rmSync } from 'fs';
+import os from 'os';import path from 'path';
+vi.mock('@/lib/user',()=>({currentUserId:vi.fn(async()=> 'alice')}));
+vi.mock('@/server/auth/session',()=>({getServerSession:vi.fn(async()=>({user:{id:'alice'}}))}));
+vi.mock('@/lib/ai/completion',()=>({complete:vi.fn(async()=> 'Answer')}));
+vi.mock('@/lib/ssh/ssh-manager',()=>({getSSHManager:()=>({executeCommand:vi.fn(async()=> 'Bounded evidence password=never-store-this')})}));
+import { currentUserId } from '@/lib/user';
+import { getServerSession } from '@/server/auth/session';
+import { complete } from '@/lib/ai/completion';
+import { getDb,closeDb,runMigrations } from '@/lib/db';
+import { GET,POST,PATCH } from '@/server/routes/ai/conversations/route';
+import { POST as send,GET as history } from '@/server/routes/ai/chat/route';
+let root:string;
+const request=(body:unknown)=>new Request('http://localhost/api/ai/chat',{method:'POST',body:JSON.stringify(body)});
+const payload={provider:'openai',model:'gpt-test',effort:'default',permission:'read-only',message:'First case',sources:[],attachments:[]};
+beforeEach(()=>{vi.clearAllMocks();closeDb();root=mkdtempSync(path.join(os.tmpdir(),'multiplexity-conversations-'));vi.stubEnv('DATABASE_PATH',path.join(root,'test.db'));vi.mocked(currentUserId).mockResolvedValue('alice');vi.mocked(getServerSession).mockResolvedValue({user:{id:'alice'}});});
+afterEach(()=>{closeDb();vi.unstubAllEnvs();rmSync(root,{recursive:true,force:true});});
+it('migrates legacy messages idempotently without deleting or merging accounts',()=>{
+ const db=new Database(':memory:');db.exec("CREATE TABLE ai_chat_messages(id INTEGER PRIMARY KEY,user_id TEXT,role TEXT,content TEXT,created_at TEXT);INSERT INTO ai_chat_messages VALUES(1,'alice','user','Old question','2026-01-01'),(2,'bob','assistant','Old answer','2026-01-01')");
+ runMigrations(db);runMigrations(db);
+ expect(db.prepare('SELECT * FROM ai_conversations').all()).toHaveLength(2);
+ const rows=db.prepare('SELECT * FROM ai_chat_messages ORDER BY id').all() as {conversation_id:string;content:string}[];
+ expect(rows.map(row=>row.content)).toEqual(['Old question','Old answer']);expect(rows[0].conversation_id).not.toBe(rows[1].conversation_id);db.close();
+});
+it('isolates context, ownership and archived conversations',async()=>{
+ const first=(await(await POST()).json()).conversation;const second=(await(await POST()).json()).conversation;
+ await send(request({...payload,conversationId:first.id}));
+ await send(request({...payload,message:'Second case',conversationId:second.id}));
+ expect(vi.mocked(complete).mock.calls[1][3]).toHaveLength(1);
+ expect((await(await history(new Request('http://localhost?conversation='+first.id))).json()).messages).toHaveLength(2);
+ await PATCH(request({id:first.id,archived:true,title:'Case A'}));
+ expect((await send(request({...payload,conversationId:first.id}))).status).toBe(404);
+ vi.mocked(currentUserId).mockResolvedValue('bob');vi.mocked(getServerSession).mockResolvedValue({user:{id:'bob'}});
+ expect((await(await GET()).json()).conversations).toEqual([]);
+ expect((await PATCH(request({id:second.id,title:'Stolen'}))).status).toBe(404);
+ expect((await history(new Request('http://localhost?conversation='+second.id))).status).toBe(404);
+});
+it('persists sanitized source snapshots and artifact links across reload',async()=>{
+ getDb().prepare("INSERT INTO vms(id,label,host,username,encrypted_password,encryption_iv,encryption_auth_tag) VALUES('vm-test','Fixture','localhost','test','','','')").run();
+ const sent=await(await send(request({...payload,sources:[{vmId:'vm-test',kind:'systemd',target:'test.service',label:'test'}]}))).json();
+ const data=await(await history(new Request('http://localhost?conversation='+sent.conversationId))).json();
+ expect(data.messages[1].sources[0].excerpt).toContain('Bounded evidence');expect(JSON.stringify(data)).not.toContain('never-store-this');expect(data.messages[1].artifact).toBe(sent.artifact);
+});
+it('regenerates from the original prompt without later turns or overwriting the answer',async()=>{
+ const first=await(await send(request(payload))).json();
+ const original=(await(await history(new Request('http://localhost?conversation='+first.conversationId))).json()).messages[1];
+ await send(request({...payload,conversationId:first.conversationId,message:'Unrelated later turn'}));
+ const regenerated=await(await send(request({...payload,conversationId:first.conversationId,message:'Ignore forged prompt',regenerateFrom:original.id}))).json();
+ expect(regenerated.variantOf).toBe(original.id);
+ expect(vi.mocked(complete).mock.calls.at(-1)![3]).toEqual([{role:'user',content:payload.message}]);
+ const rows=(await(await history(new Request('http://localhost?conversation='+first.conversationId))).json()).messages;
+ expect(rows).toHaveLength(5);expect(rows.filter((row:{variantOf?:number})=>row.variantOf===original.id)).toHaveLength(1);
+});
+it('enforces Ask mode on sources recovered for regeneration before executing SSH',async()=>{
+ getDb().prepare("INSERT INTO vms(id,label,host,username,encrypted_password,encryption_iv,encryption_auth_tag) VALUES('vm-test','Fixture','localhost','test','','','')").run();
+ const first=await(await send(request({...payload,sources:[{vmId:'vm-test',kind:'systemd',target:'test.service',label:'test'}]}))).json();
+ const message=(await(await history(new Request('http://localhost?conversation='+first.conversationId))).json()).messages[1];
+ vi.mocked(complete).mockClear();
+ expect((await send(request({...payload,conversationId:first.conversationId,regenerateFrom:message.id,permission:'ask'}))).status).toBe(428);
+ expect(complete).not.toHaveBeenCalled();
+});
+it('uses the chosen answer version once in subsequent model context',async()=>{
+ const first=await(await send(request(payload))).json();const url=new Request('http://localhost?conversation='+first.conversationId);
+ const original=(await(await history(url)).json()).messages[1];
+ vi.mocked(complete).mockResolvedValueOnce('Alternative answer');
+ await send(request({...payload,conversationId:first.conversationId,regenerateFrom:original.id}));
+ await send(request({...payload,conversationId:first.conversationId,message:'Follow up',historyVersions:[original.id]}));
+ const context=vi.mocked(complete).mock.calls.at(-1)![3];
+ expect(context.filter(message=>message.role==='assistant')).toEqual([{role:'assistant',content:'Answer'}]);
+ expect(context.at(-1)?.content).toContain('Follow up');
+});
