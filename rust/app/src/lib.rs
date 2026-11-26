@@ -3,6 +3,7 @@ pub mod auth;
 pub mod core;
 pub mod databases;
 pub mod integrations;
+mod library;
 pub mod machines;
 pub mod pilot;
 pub mod scm;
@@ -121,6 +122,7 @@ pub fn router(state: AppState, frontend_dir: PathBuf) -> Router {
         .merge(integrations::router())
         .merge(pilot::router())
         .merge(scm::router())
+        .merge(library::router())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_user,

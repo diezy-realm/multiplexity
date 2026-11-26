@@ -1,6 +1,6 @@
 import { getDb } from '@/lib/db';
 import { encrypt, decrypt } from '@/lib/crypto/credential-store';
-import { PROVIDERS, type ProviderId, type Connection } from './catalog';
+import { API_ENDPOINTS, PROVIDERS, type ProviderId, type Connection } from './catalog';
 
 interface ConnectionRow { provider: ProviderId; model: string; api_key_encrypted: string; api_key_iv: string; api_key_auth_tag: string; cli_path: string; endpoint?: string }
 
@@ -9,7 +9,7 @@ export function getConnection(provider: ProviderId) {
   const definition = PROVIDERS.find(item => item.id === provider)!;
   let apiKey = '';
   if (row?.api_key_encrypted) apiKey = decrypt({ ciphertext: row.api_key_encrypted, iv: row.api_key_iv, authTag: row.api_key_auth_tag });
-  return { saved: !!row, provider, model: row?.model ?? definition.defaultModel, apiKey, cliPath: row?.cli_path ?? '', endpoint: row?.endpoint || (provider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai' : provider === 'ollama' ? 'http://127.0.0.1:11434/v1' : '') };
+  return { saved: !!row, provider, model: row?.model ?? definition.defaultModel, apiKey, cliPath: row?.cli_path ?? '', endpoint: row?.endpoint || API_ENDPOINTS[provider] || '' };
 }
 
 export function publicConnections(): Connection[] {

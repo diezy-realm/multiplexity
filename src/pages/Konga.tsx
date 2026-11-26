@@ -1,4 +1,5 @@
 'use client';
+import { useSearchParams } from 'react-router-dom';
 import { ArrowUpRight } from 'lucide-react';
 import ConfirmDialog,{type Confirmation} from '@/components/ConfirmDialog';
 import { PageActions } from '@/components/PageHeader';
@@ -13,7 +14,9 @@ const button = 'border border-gray-300 dark:border-gray-600 rounded-xl px-3 py-2
 export default function KongaPage() {
   const [entity,setEntity] = useState<Entity>('services'); const [items,setItems] = useState<Item[]>([]); const [services,setServices] = useState<Item[]>([]);
   const [confirmation,setConfirmation]=useState<Confirmation>();
-  const [adminUrl,setAdminUrl] = useState(''); const [token,setToken] = useState(''); const [hasToken,setHasToken] = useState(false); const [clearToken,setClearToken] = useState(false); const [connected,setConnected] = useState(false); const [connectionOpen,setConnectionOpen] = useState(false);
+  const [adminUrl,setAdminUrl] = useState(''); const [token,setToken] = useState(''); const [hasToken,setHasToken] = useState(false); const [clearToken,setClearToken] = useState(false); const [connected,setConnected] = useState(false); const [params] = useSearchParams();
+  const connectFromLibrary = params.get('connect') === '1';
+  const [connectionOpen,setConnectionOpen] = useState(connectFromLibrary);
   const [busy,setBusy] = useState(false); const [message,setMessage] = useState(''); const [offset,setOffset] = useState<string | null>(null);
   const [editing,setEditing] = useState(false); const [id,setId] = useState(''); const [name,setName] = useState(''); const [upstream,setUpstream] = useState(''); const [serviceId,setServiceId] = useState(''); const [paths,setPaths] = useState(''); const [hosts,setHosts] = useState(''); const [stripPath,setStripPath] = useState(true); const [preserveHost,setPreserveHost] = useState(false);
   const [search,setSearch] = useState('');
@@ -28,7 +31,7 @@ export default function KongaPage() {
   }, [entity,read]);
   useEffect(() => {
     const abort = new AbortController();
-    void fetch('/api/konga?entity=connection',{signal:abort.signal}).then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error); setAdminUrl(data.adminUrl); setHasToken(data.hasToken); setConnected(data.connected); setConnectionOpen(!data.connected); }).catch(error=>{if (!abort.signal.aborted) setMessage(error.message);});
+    void fetch('/api/konga?entity=connection',{signal:abort.signal}).then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error); setAdminUrl(data.adminUrl); setHasToken(data.hasToken); setConnected(data.connected); setConnectionOpen(connectFromLibrary || !data.connected); }).catch(error=>{if (!abort.signal.aborted) setMessage(error.message);});
     const query = new URLSearchParams(window.location.search); if (query.get('name')) { setName(query.get('name')!.replace(/[^a-zA-Z0-9._~-]/g,'-')); setUpstream(query.get('upstream') || ''); setEditing(true); }
     return () => abort.abort();
   }, []);
@@ -36,7 +39,7 @@ export default function KongaPage() {
   async function run(action: () => Promise<void>) { setBusy(true); setMessage(''); try { await action(); } catch (error) { setMessage(error instanceof Error ? error.message : 'Permintaan gagal.'); } finally { setBusy(false); } }
   async function connect() {
     const response = await fetch('/api/konga',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({adminUrl,token,clearToken})}); const data = await response.json(); if (!response.ok) throw new Error(data.error);
-    setToken(''); setHasToken(!!token || hasToken && !clearToken); setClearToken(false); setConnected(true); setConnectionOpen(false); setMessage(`Kong ${data.version}`); await load();
+    setToken(''); setHasToken(!!token || hasToken && !clearToken); setClearToken(false); setConnected(true); setConnectionOpen(false); setMessage(`Kong ${data.version}`); window.dispatchEvent(new Event('library-apps-changed')); await load();
   }
   async function edit(item?: Item) {
     setId(item?.id || ''); setName(item?.name || ''); setUpstream(item ? `${item.protocol || 'http'}://${item.host}:${item.port}${item.path || ''}` : ''); setServiceId(item?.service?.id || ''); setPaths(item?.paths?.join('\n') || ''); setHosts(item?.hosts?.join('\n') || ''); setStripPath(item?.strip_path ?? true); setPreserveHost(item?.preserve_host ?? false); setEditing(true);

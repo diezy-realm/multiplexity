@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const { verifyCodeReview } = require('./code-review-flow.cjs');
+const { verifyCodeReview, verifyLibrary, painted } = require('./code-review-flow.cjs');
+const { verifyAIProviders } = require('./ai-provider-flow.cjs');
 const root = path.resolve(__dirname, '../..');
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'multiplexity-rust-browser-'));
 app.setPath('userData', path.join(directory, 'browser'));
@@ -47,6 +48,14 @@ async function main() {
   await window.webContents.executeJavaScript("document.querySelector('button[type=submit]').click()");
   await wait("location.pathname==='/' && document.body.textContent.includes('Virtual Machines')");
   assert.equal(await window.webContents.executeJavaScript("fetch('/api/health').then(r=>r.json()).then(v=>v.backend)"), 'rust');
+  await verifyLibrary(script => window.webContents.executeJavaScript(script), {
+    capture: async name => {
+      const output = path.join(root, '.test-artifacts/library');
+      fs.mkdirSync(output, { recursive: true });
+      fs.writeFileSync(path.join(output, name + '.png'), (await window.capturePage()).toPNG());
+    },
+  });
+  console.log('RUST_BROWSER_LIBRARY_OK');
   await verifyCodeReview(script => window.webContents.executeJavaScript(script), {
     resize: width => window.setSize(width, 960),
     capture: async name => {
@@ -56,7 +65,12 @@ async function main() {
     },
   });
   console.log('RUST_BROWSER_CODE_REVIEW_OK');
-  await window.webContents.executeJavaScript("document.querySelector('a[href=\"/chat\"]').click()");
+  await verifyAIProviders(script => window.webContents.executeJavaScript(script), async name => {
+    const directory = path.join(root, '.test-artifacts/ai-provider');
+    fs.mkdirSync(directory, { recursive: true });
+    fs.writeFileSync(path.join(directory, name + '.png'), (await window.capturePage()).toPNG());
+  });
+  console.log('RUST_BROWSER_AI_PROVIDERS_OK');
   await wait("location.pathname==='/chat' && !!document.querySelector('textarea')");
   await window.loadURL(origin + '/artifacts');
   await wait("location.pathname==='/artifacts' && document.body.textContent.includes('Artifact')");
@@ -64,7 +78,7 @@ async function main() {
   await wait("location.pathname==='/settings' && document.body.textContent.includes('Account')");
   assert.equal(await window.webContents.executeJavaScript("document.body.textContent.includes('Aktifkan Windows Hello')"), false);
   assert.deepEqual(errors, []);
-  await window.webContents.executeJavaScript('new Promise(resolve => { setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(resolve)); })');
+  await window.webContents.executeJavaScript(painted);
   const screenshot = await window.capturePage();
   const output = path.join(root, '.test-artifacts/rust-migration');
   fs.mkdirSync(output, { recursive: true });

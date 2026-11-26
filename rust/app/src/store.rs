@@ -56,6 +56,7 @@ impl Store {
         for (table, column, definition) in [
             ("users", "auth_version", "INTEGER NOT NULL DEFAULT 0"),
             ("ai_connections", "endpoint", "TEXT NOT NULL DEFAULT ''"),
+            ("ai_connections", "profile_json", "TEXT NOT NULL DEFAULT '{}'"),
             ("vms", "user_id", "TEXT NOT NULL DEFAULT ''"),
             (
                 "database_connections",
@@ -227,7 +228,15 @@ impl Store {
                 .map_err(db_error)?;
         }
         connection.execute_batch(
-            "CREATE TABLE IF NOT EXISTS scm_cache(
+            "CREATE TABLE IF NOT EXISTS library_skill_state(
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                id TEXT NOT NULL,
+                enabled INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                deleted INTEGER NOT NULL,
+                PRIMARY KEY(user_id,id)
+            );
+            CREATE TABLE IF NOT EXISTS scm_cache(
                 user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 profile_key TEXT NOT NULL,
                 section_key TEXT NOT NULL,

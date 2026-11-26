@@ -5,6 +5,7 @@ import ModelInput from './ModelInput';
 import ProviderBrandIcon from './ProviderBrandIcon';
 import { PROVIDERS, supportsEffort, type ProviderId, type Connection, type Effort, type Permission, type LogSource, type ChatAttachment } from '@/lib/ai/catalog';
 import { providerCapabilities } from '@/lib/ai/capabilities';
+import { enabledProvider } from '@/lib/ai/provider-settings';
 import { COMPOSER_MODES, type ComposerMenu, type ComposerMode } from '@/lib/ai/composer';
 
 export interface ChatComposerProps {
@@ -65,6 +66,8 @@ export default function ChatComposer(props: ChatComposerProps) {
   const fileRef = useRef<HTMLInputElement>(null);
   const locked = busy || loading || props.attaching;
   const capability = providerCapabilities(provider, model);
+  const availableProviders = props.connections.filter(item => item.configured && enabledProvider(item));
+  const providerReady = availableProviders.some(item => item.provider === provider);
   const modeLabel = COMPOSER_MODES.find(item => item.id === mode)?.label;
 
   const close = () => {
@@ -376,20 +379,16 @@ export default function ChatComposer(props: ChatComposerProps) {
         </button>
         <div className="composer-model-controls items-center">
           <ProviderBrandIcon provider={provider} size={16} className="ml-1" />
-          <Select aria-label="AI provider" value={provider} onChange={event => props.onProvider(event.target.value as ProviderId)} disabled={locked} className="composer-provider">
-            {PROVIDERS.map(item => (
-              <option value={item.id} key={item.id}>
-                {item.name}{props.connections.find(connection => connection.provider === item.id)?.configured ? ' · tersimpan' : ''}
-              </option>
-            ))}
-          </Select>
-          <ModelInput value={model} models={props.models} onChange={props.onModel} disabled={locked} className="composer-model" />
+          {availableProviders.length ? <Select aria-label="AI provider" value={providerReady ? provider : ''} onChange={event => props.onProvider(event.target.value as ProviderId)} disabled={locked} className="composer-provider">
+            {availableProviders.map(item => <option value={item.provider} key={item.provider}>{item.profile?.label || PROVIDERS.find(entry => entry.id === item.provider)?.name}</option>)}
+          </Select> : <a className="ui-button" href="/settings?section=ai">Atur AI Provider</a>}
+          <ModelInput value={model} models={props.models} onChange={props.onModel} disabled={locked || !providerReady} className="composer-model" />
           <button
             type="button"
             aria-label="Refresh model"
             title={props.loadingModels ? 'Memuat model…' : 'Refresh model'}
             className="icon-action shrink-0"
-            disabled={locked || props.loadingModels}
+            disabled={locked || !providerReady || props.loadingModels}
             onClick={props.onLoadModels}
           >
             <RefreshCw aria-hidden="true" size={15} strokeWidth={1.9} className={props.loadingModels ? 'animate-spin' : ''} />
@@ -413,7 +412,7 @@ export default function ChatComposer(props: ChatComposerProps) {
             <Square aria-hidden="true" size={14} fill="currentColor" />
           </button>
         ) : (
-          <button type="submit" className="composer-send" aria-label="Kirim pesan" disabled={locked || (!draft.trim() && !attachments.length)}>
+          <button type="submit" className="composer-send" aria-label="Kirim pesan" disabled={locked || !providerReady || (!draft.trim() && !attachments.length)}>
             <ArrowUp aria-hidden="true" size={17} strokeWidth={2.2} />
           </button>
         )}

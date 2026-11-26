@@ -1,4 +1,5 @@
 'use client';
+import { useSearchParams } from 'react-router-dom';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import { PageActions } from '@/components/PageHeader';
 
@@ -27,7 +28,9 @@ export default function DatabaseManagementPage() {
   const [isLoadingConnections, setIsLoadingConnections] = useState(false);
 
   // Connection form state
-  const [showConnectionForm, setShowConnectionForm] = useState(false);
+  const [params] = useSearchParams();
+  const connectFromLibrary = params.get('connect') === '1';
+  const [showConnectionForm, setShowConnectionForm] = useState(connectFromLibrary);
   const [editConnectionId, setEditConnectionId] = useState<string | null>(null);
 
   // Database tree state — grouped by connection ID
@@ -252,6 +255,7 @@ export default function DatabaseManagementPage() {
       }
       // Remove from local state
       setConnections((prev) => prev.filter((c) => c.id !== id));
+      window.dispatchEvent(new Event("library-apps-changed"));
       if (activeConnectionId === id) {
         setActiveConnectionId(null);
       }
@@ -298,6 +302,7 @@ export default function DatabaseManagementPage() {
 
       setShowConnectionForm(false);
       setEditConnectionId(null);
+      window.dispatchEvent(new Event("library-apps-changed"));
       // Refresh the connections list to show the new/updated connection
       await fetchConnections();
     } catch (err: any) {

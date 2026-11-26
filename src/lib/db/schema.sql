@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS ai_connections (
   api_key_auth_tag TEXT NOT NULL DEFAULT '',
   cli_path TEXT NOT NULL DEFAULT '',
   endpoint TEXT NOT NULL DEFAULT '',
+  profile_json TEXT NOT NULL DEFAULT '{}',
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 INSERT OR IGNORE INTO ai_connections (provider, model, api_key_encrypted, api_key_iv, api_key_auth_tag)

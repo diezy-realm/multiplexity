@@ -148,7 +148,6 @@ impl Accumulator {
 }
 
 pub async fn request(
-    state: &AppState,
     url: &str,
     connection: &Connection,
     body: Option<Value>,
@@ -156,16 +155,12 @@ pub async fn request(
     cancel: &CancellationToken,
     observer: Option<Observer>,
 ) -> Result<Value, AppError> {
-    request_with_client(
-        &state.client,
-        url,
-        connection,
-        body,
-        protocol,
-        cancel,
-        observer,
-    )
-    .await
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(12))
+        .build()
+        .map_err(|_| AppError::internal("Koneksi provider gagal disiapkan."))?;
+    request_with_client(&client, url, connection, body, protocol, cancel, observer).await
 }
 
 async fn request_with_client(
@@ -353,7 +348,7 @@ pub fn execute_tool(
     let result = (|| -> Result<Value, AppError> {
         match name {
             "list_artifacts" => Ok(crate::core::list_workspace(state, user)?["files"].clone()),
-            "read_artifact" => Ok(json!(
+            "read_artifact" if !text(args, "name").starts_with('.') => Ok(json!(
                 crate::core::read_workspace(state, user, text(args, "name"))?
                     .chars()
                     .take(64000)
@@ -393,6 +388,7 @@ pub async fn complete(
     } else {
         text(body, "model")
     };
+    connection.check_enabled(model)?;
     let permission = text(body, "permission");
     let effort = text(body, "effort");
     let mut instructions = String::new();
@@ -403,7 +399,8 @@ pub async fn complete(
         .flatten()
         .filter(|v| {
             matches!(text(v, "name"), "AGENTS.md" | "rules.md" | "steering.md")
-                || text(v, "name").starts_with("skills/")
+                || (crate::library::skills::is_workspace_skill(text(v, "name"))
+                    && text(v, "name") != text(body, "skill"))
         })
         .take(15)
     {
@@ -442,7 +439,7 @@ pub async fn complete(
             .await
             .ok_or_else(|| {
                 AppError::bad_request(
-                    "CLI belum ditemukan. Pasang CLI resmi atau isi executable di AI Management.",
+                    "CLI belum ditemukan. Pasang CLI resmi atau isi executable di AI Provider.",
                 )
             })?;
         let prompt = format!(
@@ -469,9 +466,9 @@ pub async fn complete(
         .await;
     }
     if model.is_empty() {
-        return Err(AppError::bad_request("Pilih model di AI Management."));
+        return Err(AppError::bad_request("Pilih model di AI Provider."));
     }
-    if matches!(provider, "openai" | "claude" | "gemini") && connection.key.is_empty() {
+    if settings::needs_key(provider) && connection.key.is_empty() {
         return Err(AppError::bad_request("Simpan API key terlebih dahulu."));
     }
     if let Some(last) = input.last_mut()
@@ -494,7 +491,6 @@ pub async fn complete(
         let mut messages = vec![json!({"role":"system","content":system})];
         messages.extend(input);
         let result = request(
-            state,
             &format!("{endpoint}/chat/completions"),
             &connection,
             Some(json!({"model":model,"messages":messages})),
@@ -531,7 +527,6 @@ pub async fn complete(
             json!({"model":model,"system":system,"messages":input,"max_tokens":4096,"tools":available.iter().map(|v|json!({"name":v["name"],"description":v["description"],"input_schema":v["parameters"]})).collect::<Vec<_>>()})
         };
         let result = request(
-            state,
             if provider == "openai" {
                 "https://api.openai.com/v1/responses"
             } else {

@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 
 const button = label => "[...document.querySelectorAll('button')].find(el => el.getClientRects().length && el.textContent.trim() === " + JSON.stringify(label) + ')';
 const text = (value, scope = 'document.body') => scope + '?.innerText.includes(' + JSON.stringify(value) + ')';
-const painted = "new Promise(resolve => { setTimeout(resolve, 250); requestAnimationFrame(() => requestAnimationFrame(resolve)); })";
+const painted = "new Promise(resolve => setTimeout(() => { setTimeout(resolve, 400); requestAnimationFrame(() => requestAnimationFrame(resolve)); }, 200))";
 
 async function waitFor(evaluate, expression, label) {
   const deadline = Date.now() + 15000;
@@ -34,8 +34,10 @@ async function loginFixture(evaluate, username) {
 
 async function verifyCodeReview(evaluate, { capture, resize } = {}) {
   const query = value => 'document.querySelector(' + JSON.stringify(value) + ')';
-  const sidebar = query('nav a[href="/code-review"]');
-  await click(evaluate, sidebar, 'Code Review sidebar');
+  await click(evaluate, query('nav a[href="/library"]'), 'Library sidebar');
+  await click(evaluate, query('a[href="/library?app=code-review"]'), 'Code Review app detail');
+  await click(evaluate, button('Coba demo').replace("querySelectorAll('button')", "querySelectorAll('a')"), 'Code Review library demo');
+  await evaluate("location.assign('/code-review'); true").catch(() => {});
   await waitFor(evaluate, text('Siapkan GitHub Enterprise'), 'unconfigured state');
   await click(evaluate, button('Coba demo'), 'fixture mode toggle');
   await waitFor(evaluate, text('Gunakan tanggal UTC pada catatan rilis') + ' && ' + text('Deskripsi PR'), 'fixture summary');
@@ -127,4 +129,42 @@ async function verifyCodeReview(evaluate, { capture, resize } = {}) {
   await waitFor(evaluate, text('Personal HTTP access token (PAT)') + ' && ' + 'Boolean(' + query('input[placeholder=\"https://git.internal/bitbucket\"]') + ')', 'Bitbucket custom URL and PAT fields');
 }
 
-module.exports = { loginFixture, verifyCodeReview, waitFor };
+
+async function verifyLibrary(evaluate, { capture } = {}) {
+  const query = selector => 'document.querySelector(' + JSON.stringify(selector) + ')';
+  const sidebar = id => query('nav[aria-label="Navigasi utama"] a[title="' + id + '"]');
+  await click(evaluate, sidebar('Library'), 'Library nav');
+  await waitFor(evaluate, text('Hubungkan aplikasi dan pilih') + ' && ' + text('VM Machines') + ' && ' + text('Confluent'), 'independent apps');
+  if (capture) { await evaluate(painted); await capture('apps'); }
+  assert.equal(await evaluate('Boolean(' + sidebar('VM Machines') + ')'), false);
+  assert.equal(await evaluate('Boolean(' + sidebar('Infrastructure') + ')'), false);
+  await click(evaluate, query('a[aria-label="Hubungkan Bamboo"]'), 'connect Bamboo');
+  await waitFor(evaluate, 'Boolean(' + query('#enterprise-connector-form') + ')', 'filtered connector form');
+  await evaluate("(() => {const apply = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set; const inputs = [...document.querySelectorAll('#enterprise-connector-form input')]; for (const [input,value] of [[inputs.find(i=>i.id==='enterprise-connector-label'),'Synthetic Bamboo'],[inputs.find(i=>i.placeholder==='https://host.internal'),'https://bamboo.example.test'],[inputs.find(i=>i.type==='password'),'synthetic-token']]) { apply.call(input,value); input.dispatchEvent(new Event('input',{bubbles:true})); }})()");
+  await click(evaluate, button('Simpan Konektor'), 'save Bamboo connection');
+  await waitFor(evaluate, text('Synthetic Bamboo') + ' && Boolean(' + query('[role=switch][aria-label="Enable Bamboo"]') + ')', 'stored connection details');
+  assert.equal(await evaluate('Boolean(' + sidebar('Bamboo') + ')'), false);
+  await click(evaluate, query('[role=switch][aria-label="Enable Bamboo"]'), 'enable app in Library');
+  await waitFor(evaluate, 'Boolean(' + sidebar('Bamboo') + ')', 'enabled sidebar entry');
+  await click(evaluate, "Array.from(document.querySelectorAll('a')).find(el=>el.textContent.trim()==='Buka di Settings')", 'Settings app details');
+  await waitFor(evaluate, query('[role=switch][aria-label="Enable Bamboo"]') + '?.getAttribute("aria-checked") === "true"', 'shared toggle in Settings');
+  await click(evaluate, query('[role=switch][aria-label="Enable Bamboo"]'), 'disable app in Settings');
+  await waitFor(evaluate, '!(' + sidebar('Bamboo') + ')', 'sidebar entry removed');
+  await click(evaluate, sidebar('Library'), 'return to Library');
+  await click(evaluate, query('a[href="/library?section=skills"]'), 'open Skills');
+  await click(evaluate, query('a[href="/library?section=skills&skill=explain"]'), 'open built-in skill');
+  await waitFor(evaluate, text('Jelaskan log atau error'), 'read skill');
+  if (capture) { await evaluate(painted); await capture('skill'); }
+  await click(evaluate, query('[role=switch][aria-label="Aktifkan skill explain"]'), 'deactivate skill');
+  await waitFor(evaluate, text('Nonaktif'), 'disabled skill');
+  await click(evaluate, button('Edit'), 'edit skill');
+  await evaluate("(() => { const area=document.querySelector('textarea'); const setter=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set; setter.call(area,'# Synthetic workflow'); area.dispatchEvent(new Event('input',{bubbles:true})); })()");
+  await click(evaluate, button('Simpan'), 'save skill edit');
+  await waitFor(evaluate, text('Synthetic workflow'), 'updated skill');
+  await click(evaluate, button('Hapus'), 'open skill deletion confirmation');
+  await waitFor(evaluate, 'Boolean(document.querySelector("dialog[open]"))', 'skill deletion confirmation');
+  await click(evaluate, button('Lanjutkan'), 'delete fixture skill');
+  await waitFor(evaluate, "location.search === '?section=skills' && !document.querySelector('dialog[open]')", 'skill catalog after deletion');
+}
+
+module.exports = { loginFixture, verifyCodeReview, verifyLibrary, waitFor, painted };

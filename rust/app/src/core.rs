@@ -310,6 +310,8 @@ pub fn workspace_root(state: &AppState, user: &str) -> Result<PathBuf, AppError>
         root.clone(),
         root.join("skills"),
         root.join("artifacts"),
+        root.join(".inactive-skills"),
+        root.join(".deleted-skills"),
     ] {
         std::fs::create_dir_all(&path).map_err(file_error)?;
         if is_link(&std::fs::symlink_metadata(&path).map_err(file_error)?) {
@@ -329,10 +331,6 @@ pub fn workspace_root(state: &AppState, user: &str) -> Result<PathBuf, AppError>
             "steering.md",
             "# Steering\nRespond in concise technical Indonesian. Distinguish facts, hypotheses and unverified claims.\n",
         ),
-        (
-            "skills/diagnose.md",
-            "# Diagnose\nIdentify evidence, probable cause and verification steps. Include source timestamps.\n",
-        ),
     ] {
         match std::fs::OpenOptions::new()
             .write(true)
@@ -344,9 +342,25 @@ pub fn workspace_root(state: &AppState, user: &str) -> Result<PathBuf, AppError>
             Err(error) => return Err(file_error(error)),
         }
     }
+    if !root.join(".skills-initialized").is_file() {
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(root.join("skills/diagnose.md")) {
+            Ok(mut file) => file.write_all(b"# Diagnose\nIdentify evidence, probable cause and verification steps. Include source timestamps.\n").map_err(file_error)?,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {},
+            Err(error) => return Err(file_error(error)),
+        }
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(root.join(".skills-initialized"))
+        {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(file_error(error)),
+        }
+    }
     Ok(root)
 }
-fn is_link(metadata: &std::fs::Metadata) -> bool {
+pub(crate) fn is_link(metadata: &std::fs::Metadata) -> bool {
     #[cfg(windows)]
     {
         use std::os::windows::fs::MetadataExt;
@@ -473,6 +487,51 @@ pub fn read_workspace(state: &AppState, user: &str, name: &str) -> Result<String
     std::fs::read_to_string(path).map_err(file_error)
 }
 static WORKSPACE_WRITE: OnceLock<Mutex<()>> = OnceLock::new();
+static SKILL_MUTATION: OnceLock<Mutex<()>> = OnceLock::new();
+
+pub(crate) fn skill_mutation_lock() -> Result<std::sync::MutexGuard<'static, ()>, AppError> {
+    SKILL_MUTATION
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| AppError::internal("Skill lock unavailable"))
+}
+
+pub(crate) fn move_workspace_file(
+    state: &AppState,
+    user: &str,
+    from: &str,
+    to: &str,
+    expected_hash: Option<&str>,
+) -> Result<(), AppError> {
+    let _guard = WORKSPACE_WRITE
+        .get_or_init(Default::default)
+        .lock()
+        .map_err(|_| AppError::internal("Workspace lock unavailable"))?;
+    if let Some(hash) = expected_hash
+        && content_hash(&read_workspace(state, user, from)?) != hash
+    {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            "Skill berubah. Muat ulang sebelum menghapus.",
+        ));
+    }
+    let source = workspace_file(state, user, from)?;
+    let dest = workspace_file(state, user, to)?;
+    if dest.exists() {
+        return Err(AppError::new(
+            StatusCode::CONFLICT,
+            "File tujuan sudah ada.",
+        ));
+    }
+    std::fs::create_dir_all(
+        dest.parent()
+            .ok_or_else(|| AppError::bad_request("Path skill tidak valid."))?,
+    )
+    .map_err(file_error)?;
+    let dest = workspace_file(state, user, to)?;
+    std::fs::rename(source, dest).map_err(file_error)
+}
+
 pub fn write_workspace(
     state: &AppState,
     user: &str,

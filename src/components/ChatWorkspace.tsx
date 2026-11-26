@@ -11,7 +11,7 @@ import ActionIcon from './ActionIcon';
 import Select from '@/components/Select';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { PROVIDERS, SKILLS, supportsEffort, type ProviderId, type Connection, type ChatMessage, type LogSource, type ChatAttachment, type Effort, type Permission } from '@/lib/ai/catalog';
+import { PROVIDERS, supportsEffort, type ProviderId, type Connection, type ChatMessage, type LogSource, type ChatAttachment, type Effort, type Permission } from '@/lib/ai/catalog';
 import type { RunningService } from '@/lib/services/service-detector';
 import MarkdownOutput from '@/components/MarkdownOutput';
 import ConversationPicker from './ConversationPicker';
@@ -19,6 +19,8 @@ import RunTimeline,{type RunStep} from './RunTimeline';
 import SourceEvidence, {type Evidence} from './SourceEvidence';
 import { providerCapabilities } from '@/lib/ai/capabilities';
 import ChatComposer from './ChatComposer';
+import type { LibrarySkill } from '@/lib/library';
+import { enabledProvider, providerSettingsEvent, type ProviderSettings } from '@/lib/ai/provider-settings';
 import { composerContext, parseComposerInput, type ComposerMode, type ComposerMenu } from '@/lib/ai/composer';
 
 interface Message extends ChatMessage { id?:number; sources?:Evidence[]; artifact?:string; provider?:string; model?:string; variantOf?:number;steps?:RunStep[];attachments?:{name:string}[];contextSources?:LogSource[] }
@@ -47,6 +49,28 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
   const [sources, setSources] = useState<LogSource[]>([]);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
   const [skill, setSkill] = useState('');
+  const [skills, setSkills] = useState<LibrarySkill[]>([]);
+  const [skillCatalogError, setSkillCatalogError] = useState(false);
+  const [skillCatalogVersion, setSkillCatalogVersion] = useState(0);
+  useEffect(() => {
+    const refresh = () => setSkillCatalogVersion(version => version + 1);
+    window.addEventListener('library-skills-changed', refresh);
+    return () => window.removeEventListener('library-skills-changed', refresh);
+  }, []);
+  useEffect(() => {
+    const abort = new AbortController();
+    setSkillCatalogError(false);
+    void fetch('/api/library/skills', { signal: abort.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error('Katalog skill tidak tersedia.');
+        const result: { skills: LibrarySkill[] } = await response.json();
+        if (abort.signal.aborted) return;
+        const active = result.skills.filter(entry => entry.enabled);
+        setSkills(active);
+        setSkill(current => active.some(entry => entry.id === current) ? current : '');
+      }).catch(() => { if (!abort.signal.aborted) setSkillCatalogError(true); });
+    return () => abort.abort();
+  }, [skillCatalogVersion]);
   const [menu, setMenu] = useState<ComposerMenu>(null);
   const [artifactFiles, setArtifactFiles] = useState<{ name:string; size:number }[]>([]);
   const [mode, setMode] = useState<ComposerMode>(null);
@@ -79,9 +103,18 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
 
   const reloadSettings = useCallback(async () => {
     const response = await fetch('/api/ai/settings');
-    const data = await response.json();
+    const data: ProviderSettings & { error?: string } = await response.json();
     if (!response.ok) throw new Error(data.error);
-    setConnections(data.connections); setProvider(data.provider); setModel(data.model); setEffort('default'); setModels([]); setApproval(false);
+    const options = data.connections.filter(item => item.configured && enabledProvider(item));
+    const selected = options.find(item => item.provider === data.provider) ?? options[0];
+    modelController.current?.abort();
+    setLoadingModels(false);
+    setConnections(data.connections);
+    setProvider(selected?.provider ?? data.provider);
+    setModel(selected?.model ?? '');
+    setModels(selected?.profile?.models.filter(item => !selected.profile?.disabledModels.includes(item.id)) ?? []);
+    setEffort('default');
+    setApproval(false);
   }, []);
 
   useEffect(() => {
@@ -93,14 +126,14 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
       if (!response.ok) throw new Error('Daftar VM tidak dapat dimuat.');
       const data = await response.json(); if (active) setVms(data);
     })]).catch(error => { if (active) setError(error.message); }).finally(() => { if (active) setLoading(false); });
-    const updated = () => { void reloadSettings().catch(() => setError('AI Management tidak dapat dimuat.')); };
-    window.addEventListener('ai-settings-updated', updated);
+    const updated = () => { void reloadSettings().catch(() => setError('AI Provider tidak dapat dimuat.')); };
+    window.addEventListener(providerSettingsEvent, updated);
     const query = new URLSearchParams(window.location.search);
     const sourceVm = query.get('vm'); const kind = query.get('kind'); const sourceTarget = query.get('target');
     if (sourceVm && sourceTarget && (kind === 'systemd' || kind === 'docker' || kind === 'file')) {
       setSources([{ vmId: sourceVm, kind, target: sourceTarget, label: sourceTarget }]); setMode('logs');
     }
-    return () => { active = false; window.removeEventListener('ai-settings-updated', updated); controller.current?.abort(); modelController.current?.abort(); };
+    return () => { active = false; window.removeEventListener(providerSettingsEvent, updated); controller.current?.abort(); modelController.current?.abort(); };
   }, [reloadSettings]);
 
   useEffect(() => {
@@ -137,7 +170,7 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
     setComposerStatus(value?'Mode diperbarui.':'Chat biasa; sumber tidak dikirim.');
   }
   function changeDraft(value:string){
-    const parsed=parseComposerInput(value);
+    const parsed=parseComposerInput(value, skills);
     setDraft(parsed.draft);setApproval(false);
     if(parsed.mode){setMode(parsed.mode);setMenu(null);}
     else if(parsed.skill){setSkill(parsed.skill);setMenu(null);}
@@ -147,7 +180,14 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
   }
   function selectProvider(value: ProviderId) {
     invalidateApproval();
-    modelController.current?.abort(); setLoadingModels(false); setProvider(value); setModel(connections.find(item => item.provider === value)?.model ?? ''); setEffort('default'); setModels([]); setModelMessage('');
+    const selected = connections.find(item => item.provider === value);
+    modelController.current?.abort();
+    setLoadingModels(false);
+    setProvider(value);
+    setModel(selected?.model ?? '');
+    setEffort('default');
+    setModels(selected?.profile?.models.filter(item => !selected.profile?.disabledModels.includes(item.id)) ?? []);
+    setModelMessage('');
   }
 
   function addSource() {
@@ -206,6 +246,9 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
   }
   async function runChat(body:RunRequest) {
     if(busy)return;
+    const selected = connections.find(item => item.provider === body.provider);
+    if (!selected?.configured || !enabledProvider(selected)) { setError('Aktifkan provider di Settings → AI Provider.'); return; }
+    if (selected.profile?.disabledModels.includes(body.model)) { setError('Pilih model yang aktif.'); return; }
     if(body.attachments.some(file=>file.mediaType)&&!providerCapabilities(body.provider,body.model).images){setError('Adaptor provider ini belum mendukung gambar.');return;}
     setBusy(true);setError('');setFailureKind('Koneksi / stream');setApproval(false);setMenu(null);setStage('sources');reveal.reset();followOutput.current=true;receivedResult.current=false;setFailedRequest(undefined);setSteps([]);
     const activeController=new AbortController();controller.current=activeController;
@@ -232,10 +275,11 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
   async function send(approved=false, textOverride?:string, regenerateFrom?:number) {
     const input=textOverride??draft;
     if(busy||attaching||(!input.trim()&&!attachments.length)||loading)return;
-    const parsed=parseComposerInput(input);
+    const parsed=parseComposerInput(input, skills);
     if(parsed.error){setError(parsed.error);return;}
     const slash=input.match(/^\/(\S+)/)?.[1];
-    if(slash&&!SKILLS.some(item=>item.id===slash)){setError('Pilih skill yang tersedia melalui /.');return;}
+    if(slash&&!skills.some(item=>item.id===slash)){setError('Pilih skill yang tersedia melalui /.');return;}
+    if (!parsed.skill && skill && !skills.some(item => item.id === skill)) { setSkill(''); setError('Skill tidak aktif. Pilih ulang workflow.'); return; }
     const currentMode=parsed.mode??mode;
     const original=regenerateFrom?messages.find(message=>message.id===regenerateFrom):undefined;
     const context=composerContext(currentMode,sources);
@@ -282,7 +326,7 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
     <div ref={scrollContainerRef} className={`flex-1 min-h-0 overflow-y-auto ${embedded ? 'px-3' : 'px-4 md:px-8'}`} aria-busy={busy} onScroll={event=>{const node=event.currentTarget;followOutput.current=node.scrollHeight-node.scrollTop-node.clientHeight<160;}}>
       <div className="max-w-3xl mx-auto py-6 space-y-6">{conversationTitle&&<p className="text-xs text-gray-500">{conversationTitle}</p>}
         {loading && <p role="status" className="text-sm text-gray-500">Memuat…</p>}
-        {!loading && !messages.length && <div className="py-12 text-center"><h2 className="text-xl font-medium">Apa yang ingin diperiksa?</h2><p className="mt-2 text-xs text-gray-500">@ sumber log · / skill · ! diagnostik</p><div className="flex flex-wrap justify-center gap-2 mt-4">{[{label:'Analisis log',draft:'/diagnose Analisis log dan akar masalah.',mode:'logs'},{label:'Cek resource',draft:'!resources ',mode:'resources'},{label:'Ringkas insiden',draft:'/summarize Ringkas kejadian dari sumber terpilih.',mode:'logs'}].map(item=><button type="button" className="ui-button" key={item.label} onClick={()=>{setDraft(item.draft.replace(/^!(logs|status|resources)\s*/, '').replace(/^\/(diagnose|summarize)\s*/,''));setMode(item.mode as ComposerMode);setSkill(item.label==='Ringkas insiden'?'summarize':item.mode==='logs'?'diagnose':'');setApproval(false);if(!sources.length)setMenu('source');inputRef.current?.focus();}}>{item.label}</button>)}</div></div>}
+        {!loading && !messages.length && <div className="py-12 text-center"><h2 className="text-xl font-medium">Apa yang ingin diperiksa?</h2><p className="mt-2 text-xs text-gray-500">@ sumber log · / skill · ! diagnostik</p><div className="flex flex-wrap justify-center gap-2 mt-4">{[{label:'Analisis log',draft:'/diagnose Analisis log dan akar masalah.',mode:'logs'},{label:'Cek resource',draft:'!resources ',mode:'resources'},{label:'Ringkas insiden',draft:'/summarize Ringkas kejadian dari sumber terpilih.',mode:'logs'}].filter(item=>!item.draft.startsWith('/') || skills.some(skill=>item.draft.startsWith('/'+skill.id+' '))).map(item=><button type="button" className="ui-button" key={item.label} onClick={()=>{setDraft(item.draft.replace(/^!(logs|status|resources)\s*/, '').replace(/^\/(diagnose|summarize)\s*/,''));setMode(item.mode as ComposerMode);setSkill(item.label==='Ringkas insiden'?'summarize':item.mode==='logs'?'diagnose':'');setApproval(false);if(!sources.length)setMenu('source');inputRef.current?.focus();}}>{item.label}</button>)}</div></div>}
         {visibleMessages.map((root,index) => { const variants=[root,...messages.filter(item=>item.variantOf===root.id&&root.id!==undefined)];const selected=versionIndex[root.id??index]??variants.length-1;const message=variants[Math.min(selected,variants.length-1)];const selectedText=selection?.key===String(root.id??index)?selection.text:'';return <article key={root.id??index} onMouseUp={event=>{const range=window.getSelection();const text=range?.toString().slice(0,4000);if(text&&range?.anchorNode&&event.currentTarget.contains(range.anchorNode))setSelection({key:String(root.id??index),text});}} aria-label={message.role === 'user' ? 'Pesan Anda' : 'Respons AI'} className={message.role === 'user' ? 'group ml-auto max-w-[85%] rounded-2xl bg-gray-200 dark:bg-gray-800 px-4 py-3' : 'max-w-full'}>
           {message.role === 'assistant' ? <MarkdownOutput content={message.content} timestamp={message.created_at} /> : <div className="whitespace-pre-wrap break-words text-sm leading-7">{message.content}</div>}
           {message.role === 'user' && <div className="flex gap-2 mt-2 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100"><button type="button" aria-label="Copy message" title="Copy" onClick={()=>void navigator.clipboard.writeText(message.content).catch(()=>setError('Clipboard tidak tersedia.'))} className={smallControl}><ActionIcon name="copy" /></button><button type="button" aria-label="Edit message" title="Edit sebagai pesan baru" disabled={busy} onClick={()=>{setDraft(message.content);inputRef.current?.focus();}} className={smallControl}><ActionIcon name="edit" /></button>{message.created_at && <span title={new Date(message.created_at).toLocaleString()} className="flex items-center gap-1 text-xs"><ActionIcon name="clock" />{new Date(message.created_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})}</span>}</div>}
@@ -315,7 +359,8 @@ export default function ChatWorkspace({ embedded = false }: { embedded?: boolean
             {sourceKind==='service'?<Select aria-label="Service sumber" className={field+' w-full'} value={target} onChange={event=>setTarget(event.target.value)} disabled={scanning||!vmId}><option value="">{scanning?'Membaca services…':'Pilih service / container'}</option>{services.map(service=><option key={service.id} value={service.id}>{service.name} · {service.type}</option>)}</Select>:<input aria-label="Path log" className={field+' w-full font-mono'} value={target} autoComplete="off" spellCheck={false} onChange={event=>setTarget(event.target.value)} placeholder="/var/log/application.log…"/>}
             <button type="button" disabled={!vmId||!target||sources.length>=4} onClick={addSource} className="ui-button">Tambahkan</button>
           </div>}
-          {menu==='skills'&&SKILLS.map(item=><button type="button" key={item.id} onClick={()=>{setSkill(item.id);setApproval(false);setDraft(value=>value.replace(/(^|\s)\/[^\s]*$/,'$1'));setMenu(null);inputRef.current?.focus();}} className="composer-menu-item" aria-pressed={skill===item.id}><span>/{item.id}</span>{skill===item.id&&<Check aria-hidden="true" size={14} />}</button>)}
+          {menu==='skills'&&!skills.length&&<p className="p-2 text-sm">{skillCatalogError ? 'Katalog skill tidak dapat dimuat.' : 'Tidak ada skill aktif.'}</p>}
+          {menu==='skills'&&skills.map(item=><button type="button" key={item.id} onClick={()=>{setSkill(item.id);setApproval(false);setDraft(value=>value.replace(/(^|\s)\/[^\s]*$/,'$1'));setMenu(null);inputRef.current?.focus();}} className="composer-menu-item" aria-pressed={skill===item.id}><span className="min-w-0 break-all">/{item.id}</span>{skill===item.id&&<Check aria-hidden="true" size={14} />}</button>)}
         </>}/>
     </div></div>
   </div>;

@@ -11,13 +11,13 @@ export const COMPOSER_MODES = [
 export function composerContext(mode:ComposerMode,sources:LogSource[]) {
   return { sources:mode ? sources : [], diagnostic:mode==='status'?'status' as const:mode==='resources'?'resources' as const:'logs' as const, includeResources:mode==='logs-resources' };
 }
-export function parseComposerInput(value:string) {
+export function parseComposerInput(value:string, skills: readonly { id: string }[] = SKILLS) {
   const command=value.match(/^!(\S+)(\s|$)/);
   const slash=value.match(/^\/(\S+)(\s|$)/);
   if(command){
     if(!['logs','status','resources'].includes(command[1]))return {draft:value,error:'Command tersedia: !logs, !status, !resources.'};
     return {draft:value.slice(command[0].length),mode:command[1] as Exclude<ComposerMode,null|'logs-resources'>};
   }
-  if(slash&&SKILLS.some(item=>item.id===slash[1]))return {draft:value.slice(slash[0].length),skill:slash[1]};
+  if(slash&&skills.some(item=>item.id===slash[1]))return {draft:value.slice(slash[0].length),skill:slash[1]};
   return {draft:value};
 }

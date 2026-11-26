@@ -161,7 +161,7 @@ export default function CodeReviewAsk({ context, stale, disabled, onClose, onJum
     </section>}
     {error && <div role="alert" className="review-note space-y-2">
       <p>{error}</p>
-      {error.includes('AI Management') && <Link className="ui-button" to="/settings?section=ai">Buka AI Management</Link>}
+      {error.includes('AI Provider') && <Link className="ui-button" to="/settings?section=ai">Buka AI Provider</Link>}
     </div>}
     {result && <section className="review-well space-y-3 p-3" aria-label="Analisis AI">
       <h4 className="font-semibold">Analisis</h4>

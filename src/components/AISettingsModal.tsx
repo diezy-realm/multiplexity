@@ -1,140 +1,133 @@
-'use client';
-import { ArrowUpRight, RefreshCw } from 'lucide-react';
-import Select from '@/components/Select';
-import ModelInput from '@/components/ModelInput';
-import ProviderBrandIcon from '@/components/ProviderBrandIcon';
 import { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, ArrowRight, Check, Plus } from 'lucide-react';
 import Dialog from './Dialog';
-import { PROVIDERS, type ProviderId, type Connection } from '@/lib/ai/catalog';
+import ProviderBrandIcon from './ProviderBrandIcon';
+import { IdentityFields, RuntimeFields } from './AIProviderFields';
+import { PROVIDERS, type Connection, type ProviderDefinition } from '@/lib/ai/catalog';
+import { providerWrite, runtimeConfig, type Identity, type ProbeResult } from '@/lib/ai/provider-settings';
 
-const field = 'w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500';
+const steps = ['Provider', 'Identitas', 'Konfigurasi'];
 
-export default function AISettingsModal({ isOpen, onClose, initialProvider, onSaved }: { isOpen: boolean; onClose: () => void; initialProvider?: ProviderId; onSaved?: () => void }) {
-  const [connections, setConnections] = useState<Connection[]>([]);
-  const [provider, setProvider] = useState<ProviderId>('openai');
-  const [endpoint,setEndpoint] = useState('');
+export default function AISettingsModal({ connections, makeDefault, onClose, onSaved }: {
+  connections: Connection[];
+  makeDefault: boolean;
+  onClose: () => void;
+  onSaved: (provider: ProviderDefinition['id']) => void;
+}) {
+  const [step, setStep] = useState(0);
+  const [definition, setDefinition] = useState<ProviderDefinition>();
+  const [identity, setIdentity] = useState<Identity>({ label: '', description: '', color: '' });
+  const [config, setConfig] = useState(() => runtimeConfig(PROVIDERS[0]));
+  const [result, setResult] = useState<ProbeResult>();
   const [model, setModel] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [clearKey, setClearKey] = useState(false);
-  const [cliPath, setCliPath] = useState('');
-  const [models, setModels] = useState<{ id: string; name: string }[]>([]);
-  const [busy, setBusy] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [desktop, setDesktop] = useState(false);
+  const [busy, setBusy] = useState<'test' | 'save' | 'login'>();
+  const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
-  const dirtyPath = useRef(false);
-  const definition = PROVIDERS.find(item => item.id === provider)!;
-  const connection = connections.find(item => item.provider === provider);
+  const controller = useRef<AbortController | null>(null);
+  useEffect(() => () => controller.current?.abort(), []);
 
-  function select(next: ProviderId, values = connections) {
-    const item = values.find(value => value.provider === next);
-    dirtyPath.current = false;
-    setEndpoint(item?.endpoint || (next==='gemini'?'https://generativelanguage.googleapis.com/v1beta/openai':next==='ollama'?'http://127.0.0.1:11434/v1':'')); setProvider(next); setModel(item?.model ?? ''); setCliPath(item?.executable || item?.cliPath || '');
-    setApiKey(''); setClearKey(false); setModels([]); setError(''); setMessage('');
+  const detected = connections.find(item => item.provider === definition?.id);
+  const markConfig = (next: typeof config) => {
+    setConfig(next);
+    setResult(undefined);
+    setNotice('');
+    setError('');
+  };
+
+  function select(next: ProviderDefinition) {
+    if (next.id === definition?.id) return;
+    setDefinition(next);
+    setIdentity({ label: next.name, description: '', color: '' });
+    markConfig(runtimeConfig(next));
+    setModel(next.defaultModel);
   }
 
-  useEffect(() => {
-    if (!isOpen) return;
-    const controller = new AbortController();
-    setLoading(true); setError(''); setMessage(''); setApiKey('');
-    fetch('/api/ai/settings', { signal: controller.signal }).then(async response => {
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-      setConnections(data.connections); setDesktop(!!data.desktop || !!data.localCli); select(initialProvider || data.provider, data.connections);
-    }).catch(error => { if (error.name !== 'AbortError') setError('AI Management tidak dapat dimuat.'); }).finally(() => setLoading(false));
-    return () => controller.abort();
-    // Each opening reloads saved credentials without exposing the key.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, initialProvider]);
-
-  async function persist() {
-      const response = await fetch('/api/ai/settings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, model, apiKey, cliPath, clearKey, endpoint }) });
-      const data = await response.json(); if (!response.ok) throw new Error(data.error);
-      const saved = await fetch('/api/ai/settings');
-      const result = await saved.json(); if (!saved.ok) throw new Error(result.error || 'Konfigurasi tidak dapat dimuat.');
-      setConnections(result.connections); setApiKey(''); setClearKey(false);
-      const selected = result.connections.find((item: Connection) => item.provider === provider);
-      setCliPath(selected?.executable || selected?.cliPath || ''); dirtyPath.current = false;
-      window.dispatchEvent(new Event('ai-settings-updated'));
-  }
-
-  async function save(event: React.FormEvent) {
-    event.preventDefault(); setBusy(true); setError(''); setMessage('');
+  async function perform(operation: NonNullable<typeof busy>) {
+    if (!definition || controller.current) return;
+    const abort = new AbortController();
+    controller.current = abort;
+    setBusy(operation);
+    setNotice('');
+    setError('');
     try {
-      await persist();
-      onSaved?.();
-      onClose();
-    } catch (error) { setError(error instanceof Error ? error.message : 'Gagal menyimpan.'); }
-    finally { setBusy(false); }
+      const payload = { provider: definition.id, model, ...config };
+      if (operation === 'test') {
+        setResult(undefined);
+        const data = await providerWrite<ProbeResult>('/api/ai/probe', payload, 'POST', abort.signal);
+        setResult(data);
+        if (model && !data.models.some(entry => entry.id === model)) setModel('');
+      } else if (operation === 'login') {
+        const data = await providerWrite<{ message: string }>('/api/ai/connect', payload, 'POST', abort.signal);
+        setNotice(data.message);
+      } else {
+        await providerWrite('/api/ai/settings', {
+          ...payload, verify: true, makeDefault,
+          profile: { ...identity, models: result?.models ?? [], disabledModels: [] },
+        }, 'POST', abort.signal);
+        onSaved(definition.id);
+      }
+    } catch (failure) {
+      if (!abort.signal.aborted) setError(failure instanceof Error ? failure.message : 'Permintaan provider gagal.');
+    } finally {
+      controller.current = null;
+      if (!abort.signal.aborted) setBusy(undefined);
+    }
   }
 
-  async function discover() {
-    setBusy(true); setError(''); setMessage('');
-    try {
-      await persist();
-      const response = await fetch(`/api/ai/models?provider=${provider}`); const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-      setModels(data.models); setMessage(data.message || `${data.models.length} model tersedia`);
-    } catch (error) { setError(error instanceof Error ? error.message : 'Gagal membaca model.'); }
-    finally { setBusy(false); }
+  function next(event: React.FormEvent) {
+    event.preventDefault();
+    if (busy || !definition) return;
+    if (step === 2) {
+      if (result) void perform('save');
+      return;
+    }
+    if (step === 1 && !identity.label.trim()) return;
+    setStep(step + 1);
+    if (step === 1 && definition.mode === 'cli' && detected?.executable && !result) void perform('test');
   }
 
-  async function connect() {
-    setBusy(true); setError(''); setMessage('');
-    try {
-      await persist();
-      const response = await fetch('/api/ai/connect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider }) });
-      const data = await response.json(); if (!response.ok) throw new Error(data.error); setMessage(data.message);
-    } catch (error) { setError(error instanceof Error ? error.message : 'Gagal membuka login.'); }
-    finally { setBusy(false); }
-  }
-
-  useEffect(() => {
-    if (!isOpen || loading || definition.mode !== 'cli' || !desktop) return;
-    const controller = new AbortController();
-    fetch('/api/ai/detect', { method: 'POST', signal: controller.signal, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider, path: cliPath }) })
-      .then(async response => {
-        const result = await response.json(); if (!response.ok || dirtyPath.current) return;
-        setConnections(previous => previous.map(item => item.provider === provider ? { ...item, available: result.available, executable: result.executable } : item));
-        if (result.executable) setCliPath(result.executable);
-      }).catch(() => {});
-    return () => controller.abort();
-    // Re-scan when opening settings or changing provider; typing preserves the draft.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isOpen, loading, provider, desktop]);
-
-  async function detect() {
-    setBusy(true); setError(''); setMessage('');
-    try {
-      const response = await fetch('/api/ai/detect', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ provider }) });
-      const result = await response.json(); if (!response.ok) throw new Error(result.error);
-      setConnections(previous => previous.map(item => item.provider === provider ? { ...item, available: result.available, executable: result.executable } : item));
-      if (result.executable) { setCliPath(result.executable); dirtyPath.current = false; setMessage('CLI terdeteksi'); }
-      else setError('CLI belum ditemukan. Pilih file .exe atau isi folder instalasinya.');
-    } catch (error) { setError(error instanceof Error ? error.message : 'Deteksi CLI gagal.'); }
-    finally { setBusy(false); }
-  }
-
-  if (!isOpen) return null;
-  return <Dialog title="AI Management" onClose={onClose}>
-    {loading ? <p role="status" className="text-sm text-gray-500">Memuat…</p> : <form onSubmit={save} className="space-y-4">
-      <label className="block text-sm"><span className="inline-flex items-center gap-2"><ProviderBrandIcon provider={provider} size={16} />Provider</span><Select aria-label="Provider" className={`${field} mt-1.5`} value={provider} onChange={event => select(event.target.value as ProviderId)} disabled={busy}>{PROVIDERS.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</Select></label>
-      <p className="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400"><span className={`h-1.5 w-1.5 rounded-full ${definition.mode === 'api' ? (connection?.configured ? 'bg-green-500' : 'bg-gray-400') : (connection?.available ? 'bg-green-500' : 'bg-amber-500')}`} />
-        {definition.mode === 'api' ? connection?.configured ? `Key tersimpan ${connection.apiKeyHint}` : 'API key belum diisi' : connection?.available ? 'CLI ditemukan · login dikelola CLI' : 'CLI belum ditemukan'}</p>
-      {provider !== 'codex' && <div><label className="block text-sm">{provider === 'kiro' ? 'Kiro API key · opsional' : provider === 'antigravity' ? 'Gemini API key · opsional' : 'API key'}<input aria-label="API key" type="password" autoComplete="off" className={`${field} mt-1.5`} value={apiKey} onChange={event => { setApiKey(event.target.value); setClearKey(false); }} placeholder={clearKey ? 'Key akan dihapus saat disimpan' : connection?.apiKeyHint ? 'Kosongkan untuk mempertahankan key' : definition.mode === 'cli' ? 'Kosongkan untuk memakai login CLI' : 'API key'} /></label>{connection?.apiKeyHint && <button type="button" onClick={() => { setClearKey(true); setApiKey(''); }} className="mt-1 text-xs text-gray-500 hover:text-red-500">Hapus key</button>}</div>}
-      {definition.mode === 'cli' && <>
-        <div><label htmlFor="cli-executable" className="block text-sm mb-1.5">Executable</label><div className="flex gap-2"><input id="cli-executable" aria-label="CLI executable" disabled={busy} className={`${field} font-mono min-w-0`} value={cliPath} onChange={event => { dirtyPath.current = true; setCliPath(event.target.value); setError(''); setConnections(previous => previous.map(item => item.provider === provider ? { ...item, available: false } : item)); }} placeholder="Deteksi otomatis · file .exe atau folder bin" /><button type="button" onClick={detect} disabled={busy || !desktop} className="shrink-0 rounded-lg border border-gray-300 dark:border-gray-600 px-3 text-xs disabled:opacity-50">Deteksi</button></div></div>
-        <button type="button" onClick={connect} disabled={busy || !desktop} className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm hover:bg-gray-50 dark:hover:bg-gray-700 disabled:opacity-50">Connect melalui CLI</button>
-      </>}
-      {['gemini','ollama','custom'].includes(provider) && <label className="block text-sm">API endpoint<input aria-label="API endpoint" value={endpoint} onChange={event=>setEndpoint(event.target.value)} className={field} placeholder="https://provider.example/v1" /></label>}
-      <label className="block text-sm">Model ID (manual)<input aria-label="Model ID manual" value={model} onChange={event=>setModel(event.target.value)} className={field} /></label>
-      <div><label htmlFor="ai-model" className="block text-sm mb-1.5">Model</label><div className="flex gap-2"><ModelInput id="ai-model" className={field} value={model} models={models} onChange={setModel} placeholder={definition.mode === 'cli' ? 'Default CLI' : 'Model ID'} /><button type="button" onClick={discover} disabled={busy} className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-600 px-3 text-xs disabled:opacity-50"><RefreshCw aria-hidden="true" size={13} className={busy ? 'animate-spin' : ''} />Muat model</button></div><datalist id="ai-models">{models.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</datalist></div>
-      {provider === 'claude' && <p className="text-xs text-gray-500 dark:text-gray-400">Koneksi aplikasi memakai API key. Login langganan Claude tidak digunakan sebagai token API.</p>}
-      <a href={definition.keyUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-600 dark:text-blue-400">Dokumentasi koneksi <ArrowUpRight aria-hidden="true" size={13} /></a>
-      {error && <p role="alert" className="text-sm text-red-600 dark:text-red-400">{error}</p>}
-      {message && <p role="status" className="text-sm text-gray-600 dark:text-gray-300">{message}</p>}
-      <button disabled={busy} type="submit" className="w-full rounded-lg bg-blue-600 hover:bg-blue-700 px-3 py-2 text-sm font-medium text-white disabled:opacity-50">{busy ? 'Memproses…' : 'Simpan'}</button>
-    </form>}
+  return <Dialog title="Tambah AI Provider" onClose={onClose} className="ai-wizard max-w-2xl">
+    <ol className="ai-steps" aria-label="Tahapan penambahan provider">
+      {steps.map((label, index) => <li key={label} aria-current={step === index ? 'step' : undefined}>
+        <span>{index < step ? <Check size={13} aria-label="Selesai" /> : index + 1}</span>{label}
+      </li>)}
+    </ol>
+    <form onSubmit={next}>
+      <div className="ai-wizard-body">
+        {step === 0 && <fieldset className="ai-provider-grid">
+          <legend>Pilih provider</legend>
+          {PROVIDERS.map(item => {
+            const connection = connections.find(entry => entry.provider === item.id);
+            const current = connection?.saved ?? connection?.configured ?? false;
+            return <label key={item.id} className="ai-provider-choice">
+              <input type="radio" name="provider-type" checked={definition?.id === item.id} disabled={current} onChange={() => select(item)} />
+              <ProviderBrandIcon provider={item.id} size={20} />
+              <span><strong>{item.name}</strong><small>{current ? 'Sudah dikonfigurasi' : connection?.executable ? 'CLI terdeteksi' : item.mode === 'cli' ? 'CLI lokal' : 'API'}</small></span>
+            </label>;
+          })}
+        </fieldset>}
+        {step === 1 && <IdentityFields value={identity} onChange={setIdentity} />}
+        {step === 2 && definition && <>
+          <RuntimeFields definition={definition} connection={detected} value={config} onChange={markConfig} busy={!!busy} testing={busy === 'test'} result={result} onTest={() => void perform('test')} onLogin={() => void perform('login')} />
+          {result && <label className="ai-field mt-3"><span>Model default</span>
+            <select className="ai-input" value={model} onChange={event => setModel(event.target.value)}>
+              <option value="">{definition.mode === 'cli' ? 'Default CLI' : 'Pilih nanti'}</option>
+              {model && !result.models.some(item => item.id === model) && <option value={model}>{model}</option>}
+              {result.models.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}
+            </select>
+          </label>}
+          {notice && <p role="status" className="ai-muted mt-3">{notice}</p>}
+          {error && <p role="alert" className="ai-error mt-3">{error}</p>}
+        </>}
+      </div>
+      <footer className="ai-wizard-footer">
+        <button type="button" disabled={!!busy} className="ui-button" onClick={step === 0 ? onClose : () => setStep(step - 1)}>
+          {step > 0 && <ArrowLeft size={15} />}{step === 0 ? 'Batal' : 'Kembali'}
+        </button>
+        <button type="submit" className="ai-primary" disabled={!!busy || !definition || (step === 1 && !identity.label.trim()) || (step === 2 && !result)}>
+          {step === 2 ? <><Plus size={15} /> Tambah provider</> : <>Lanjut <ArrowRight size={15} /></>}
+        </button>
+      </footer>
+    </form>
   </Dialog>;
 }

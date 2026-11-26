@@ -4,7 +4,8 @@ const path = require('node:path');
 const os = require('node:os');
 const net = require('node:net');
 const assert = require('node:assert/strict');
-const { loginFixture, verifyCodeReview } = require('./code-review-flow.cjs');
+const { loginFixture, verifyCodeReview, verifyLibrary } = require('./code-review-flow.cjs');
+const { verifyAIProviders } = require('./ai-provider-flow.cjs');
 const root = path.resolve(__dirname, '../..');
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'multiplexity-tauri-smoke-'));
 const profile = process.argv.includes('--debug') ? 'debug' : 'release';
@@ -111,8 +112,12 @@ async function main() {
     try {
       await loginFixture(webview.evaluate, 'taurireviewfixture');
       assert.equal(await webview.evaluate("fetch('/api/scm/profile').then(r=>r.json()).then(v=>v.desktopOpen)"), true);
+      await verifyLibrary(webview.evaluate);
+      console.log('TAURI_WEBVIEW_LIBRARY_OK');
       await verifyCodeReview(webview.evaluate, { capture: webview.capture });
       console.log('TAURI_WEBVIEW_CODE_REVIEW_OK');
+      await verifyAIProviders(webview.evaluate);
+      console.log('TAURI_WEBVIEW_AI_PROVIDERS_OK');
     } finally {
       webview.close();
     }

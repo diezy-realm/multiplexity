@@ -2,6 +2,7 @@ import { Component, lazy, Suspense, useEffect, useState, type ReactNode } from '
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom';
 import DashboardLayout from './DashboardLayout';
+import { LibraryProvider } from '@/components/LibraryProvider';
 import Login from '@/pages/Login';
 import '@/styles/globals.css';
 
@@ -15,6 +16,7 @@ const Databases=lazy(()=>import('@/pages/Databases'));
 const Konga=lazy(()=>import('@/pages/Konga'));
 const Openshift=lazy(()=>import('@/pages/Openshift'));
 const Confluent=lazy(()=>import('@/pages/Confluent'));
+const Library=lazy(()=>import('@/pages/Library'));
 const Settings=lazy(()=>import('@/pages/Settings'));
 function Loading(){return <div role="status" className="p-5 text-sm text-gray-500">Memuat…</div>;}
 class AppBoundary extends Component<{children:ReactNode},{failed:boolean}> {
@@ -29,13 +31,14 @@ function Protected(){
   if(state==='loading')return <Loading />;
   if(state==='error')return <div role="alert" className="p-5">Koneksi terputus. <button className="ui-button" onClick={()=>window.location.reload()}>Coba lagi</button></div>;
   if(state==='anonymous')return <Navigate to={'/login?callbackUrl='+encodeURIComponent(location.pathname+location.search)} replace />;
-  return <DashboardLayout><Suspense fallback={<Loading />}><Outlet /></Suspense></DashboardLayout>;
+  return <LibraryProvider><DashboardLayout><Suspense fallback={<Loading />}><Outlet /></Suspense></DashboardLayout></LibraryProvider>;
 }
 createRoot(document.getElementById('root')!).render(<AppBoundary><BrowserRouter><Suspense fallback={<Loading />}><Routes>
   <Route path="/login" element={<Login />} />
   <Route element={<Protected />}>
     <Route path="/" element={<VirtualMachines />} /><Route path="/chat" element={<Chat />} />
     <Route path="/investigate" element={<Investigate />} /><Route path="/workspace" element={<Workspace />} />
+    <Route path="/library" element={<Library />} />
     <Route path="/code-review" element={<CodeReview />} />
     <Route path="/artifacts" element={<Workspace defaultTab="artifacts" />} /><Route path="/activity" element={<Activity />} />
     <Route path="/databases" element={<Databases />} />

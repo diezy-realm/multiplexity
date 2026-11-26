@@ -1,23 +1,20 @@
 'use client';
 import ActionIcon from '@/components/ActionIcon';
-import { useState, useEffect, lazy, Suspense } from 'react';
+import { useState, lazy, Suspense } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import {
   Activity,
-  Boxes,
-  ChevronDown,
   ChevronLeft,
   Code2,
-  Database,
   FileSearch,
   FolderGit2,
-  GitPullRequest,
   MessageSquare,
-  Network,
-  Server,
+  LibraryBig,
   Settings,
   X,
 } from 'lucide-react';
+import { useLibraryApps } from '@/components/LibraryProvider';
+import { LIBRARY_APPS, launchUrl } from '@/lib/library';
 import { signOut } from '@/client/auth';
 import AppearanceProvider from '@/components/AppearanceProvider';
 import PageHeader, { PageActionsContext } from '@/components/PageHeader';
@@ -29,49 +26,22 @@ const SnippetPanel = lazy(() => import('@/components/SnippetPanel'));
 const primaryNav = [
   { href: '/investigate', label: 'Investigate', Icon: FileSearch },
   { href: '/chat', label: 'Chat', Icon: MessageSquare },
-  { href: '/code-review', label: 'Code Review', Icon: GitPullRequest },
   { href: '/workspace', label: 'Workspace', Icon: FolderGit2 },
-];
-
-const infraNav = [
-  { href: '/', label: 'VM Machines', Icon: Server },
-  { href: '/databases', label: 'Databases', Icon: Database },
-  { href: '/konga', label: 'Konga', Icon: Network },
-  { href: '/openshift', label: 'Openshift', Icon: Boxes },
-  { href: '/confluent', label: 'Confluent', Icon: Activity },
+  { href: '/library', label: 'Library', Icon: LibraryBig },
 ];
 
 const activityNav = { href: '/activity', label: 'Activity', Icon: Activity };
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const pathname = useLocation().pathname;
-  const inInfra = infraNav.some((item) => item.href === pathname);
+  const { pathname, search } = useLocation();
+  const { data } = useLibraryApps();
+  const visibleApps = LIBRARY_APPS.filter(app => data?.apps[app.id]?.enabled);
+  const libraryAppId = new URLSearchParams(search).get('app');
+  const activeLibraryShortcut = pathname === '/library' && visibleApps.some(app => app.id === libraryAppId && !('href' in app));
   const [open, setOpen] = useState(false);
   const [collapsed, setCollapsed] = useState(false);
-  const [infraOpen, setInfraOpen] = useState(true);
   const [dock, setDock] = useState<'snippets' | 'chat' | null>(null);
   const [actionsTarget, setActionsTarget] = useState<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    fetch('/api/preferences?scope=infra-nav')
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (data && Array.isArray(data.order) && typeof data.order[0] === 'boolean') {
-          setInfraOpen(inInfra || data.order[0]);
-        }
-      })
-      .catch(() => {});
-  }, [inInfra]);
-
-  function toggleInfra() {
-    const next = !infraOpen;
-    setInfraOpen(next);
-    void fetch('/api/preferences', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scope: 'infra-nav', order: [next] }),
-    }).catch(() => {});
-  }
 
   const title =
     ({
@@ -79,6 +49,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       '/investigate': 'Investigate',
       '/chat': 'Chat',
       '/code-review': 'Code Review',
+      '/library': 'Library',
       '/workspace': 'Workspace',
       '/artifacts': 'Workspace',
       '/activity': 'Activity',
@@ -107,7 +78,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
           <nav aria-label="Navigasi utama" className="p-2 space-y-1 flex-1 overflow-y-auto">
             {primaryNav.map(({ href, label, Icon }) => {
-              const active = pathname === href || (href === '/workspace' && pathname === '/artifacts');
+              const active = (pathname === href && !activeLibraryShortcut) || (href === '/workspace' && pathname === '/artifacts');
               return (
                 <Link key={href} to={href} title={label} aria-current={active ? 'page' : undefined} onClick={() => setOpen(false)} className={navClass(active)}>
                   <Icon aria-hidden="true" className="size-5 shrink-0" strokeWidth={1.7} />
@@ -115,36 +86,17 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 </Link>
               );
             })}
-            <div>
-              <button
-                type="button"
-                aria-expanded={infraOpen}
-                aria-controls="infra-nav-group"
-                onClick={toggleInfra}
-                title="Infrastructure"
-                className={`${navClass(inInfra && !infraOpen)} w-full justify-between`}
-              >
-                <span className="flex items-center gap-3 min-w-0">
-                  <Server aria-hidden="true" className="size-5 shrink-0" strokeWidth={1.7} />
-                  {!collapsed && <span>Infrastructure</span>}
-                </span>
-                {!collapsed && (
-                  <ChevronDown aria-hidden="true" className={`size-4 shrink-0 transition-transform ${infraOpen ? '' : '-rotate-90'}`} />
-                )}
-              </button>
-              {infraOpen && (
-                <ul id="infra-nav-group" className={`mt-1 space-y-1 ${collapsed ? '' : 'pl-3'}`}>
-                  {infraNav.map(({ href, label, Icon }) => (
-                    <li key={href}>
-                      <Link to={href} title={label} aria-current={pathname === href ? 'page' : undefined} onClick={() => setOpen(false)} className={navClass(pathname === href)}>
-                        <Icon aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.7} />
-                        {!collapsed && <span>{label}</span>}
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
+            {!!visibleApps.length && <div className="border-t border-[var(--ui-border)] pt-2 mt-2">
+              {!collapsed && <p className="px-3 pb-1 text-xs font-medium text-gray-500 dark:text-gray-400">Apps</p>}
+              {visibleApps.map(app => {
+                const href = launchUrl(app, data!.apps[app.id]);
+                const active = 'href' in app ? pathname === app.href : pathname === '/library' && libraryAppId === app.id;
+                return <Link key={app.id} to={href} title={app.name} aria-current={active ? 'page' : undefined} onClick={() => setOpen(false)} className={navClass(active)}>
+                  <app.Icon aria-hidden="true" className="size-5 shrink-0" strokeWidth={1.7} />
+                  {!collapsed && <span>{app.name}</span>}
+                </Link>;
+              })}
+            </div>}
             <Link to={activityNav.href} title={activityNav.label} aria-current={pathname === activityNav.href ? 'page' : undefined} onClick={() => setOpen(false)} className={navClass(pathname === activityNav.href)}>
               <activityNav.Icon aria-hidden="true" className="size-5 shrink-0" strokeWidth={1.7} />
               {!collapsed && <span>{activityNav.label}</span>}

@@ -13,7 +13,7 @@ export async function GET(request: Request) {
   try {
     const connection = getConnection(provider);
     let models: { id: string; name: string }[] = [];
-    if (['gemini','ollama','custom'].includes(provider)) {
+    if (['gemini','ollama','custom','openrouter','groq','grok'].includes(provider)) {
       if (!connection.endpoint) throw new Error('Simpan endpoint API terlebih dahulu.');
       const data = await providerRequest(connection.endpoint.replace(/\/$/,'') + '/models', connection.apiKey ? {Authorization:'Bearer ' + connection.apiKey} : {}, undefined, request.signal);
       models = ((data.data ?? []) as {id:string}[]).filter(item=>typeof item.id==='string').map(item=>({id:item.id,name:item.id}));

@@ -74,15 +74,16 @@ fn target(state: &AppState) -> Result<(ai::settings::Connection, String, String)
     let provider = ai::settings::active(state)?;
     if ai::settings::is_cli(&provider) {
         return Err(AppError::bad_request(
-            "Pilih provider API di Settings → AI Management untuk review dengan bukti terpilih.",
+            "Pilih provider API di Settings → AI Provider untuk review dengan bukti terpilih.",
         ));
     }
     let connection = ai::settings::connection(state, &provider)?;
+    connection.check_enabled(&connection.model)?;
     if connection.model.is_empty()
-        || matches!(provider.as_str(), "openai" | "claude" | "gemini") && connection.key.is_empty()
+        || ai::settings::needs_key(&provider) && connection.key.is_empty()
     {
         return Err(AppError::bad_request(
-            "Lengkapi model dan kredensial di Settings → AI Management.",
+            "Lengkapi model dan kredensial di Settings → AI Provider.",
         ));
     }
     let destination = match provider.as_str() {
@@ -94,7 +95,7 @@ fn target(state: &AppState) -> Result<(ai::settings::Connection, String, String)
         ),
         _ => {
             return Err(AppError::bad_request(
-                "Atur endpoint di Settings → AI Management.",
+                "Atur endpoint di Settings → AI Provider.",
             ));
         }
     };
