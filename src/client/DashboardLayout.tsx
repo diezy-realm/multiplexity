@@ -11,6 +11,7 @@ import {
   Database,
   FileSearch,
   FolderGit2,
+  GitPullRequest,
   MessageSquare,
   Network,
   Server,
@@ -28,6 +29,7 @@ const SnippetPanel = lazy(() => import('@/components/SnippetPanel'));
 const primaryNav = [
   { href: '/investigate', label: 'Investigate', Icon: FileSearch },
   { href: '/chat', label: 'Chat', Icon: MessageSquare },
+  { href: '/code-review', label: 'Code Review', Icon: GitPullRequest },
   { href: '/workspace', label: 'Workspace', Icon: FolderGit2 },
 ];
 
@@ -76,6 +78,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
       '/': 'Virtual Machines',
       '/investigate': 'Investigate',
       '/chat': 'Chat',
+      '/code-review': 'Code Review',
       '/workspace': 'Workspace',
       '/artifacts': 'Workspace',
       '/activity': 'Activity',

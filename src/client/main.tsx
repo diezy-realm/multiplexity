@@ -9,6 +9,7 @@ const VirtualMachines=lazy(()=>import('@/pages/VirtualMachines'));
 const Chat=lazy(()=>import('@/pages/Chat'));
 const Investigate=lazy(()=>import('@/pages/Investigate'));
 const Workspace=lazy(()=>import('@/pages/Workspace'));
+const CodeReview=lazy(()=>import('@/pages/CodeReview'));
 const Activity=lazy(()=>import('@/pages/Activity'));
 const Databases=lazy(()=>import('@/pages/Databases'));
 const Konga=lazy(()=>import('@/pages/Konga'));
@@ -35,6 +36,7 @@ createRoot(document.getElementById('root')!).render(<AppBoundary><BrowserRouter>
   <Route element={<Protected />}>
     <Route path="/" element={<VirtualMachines />} /><Route path="/chat" element={<Chat />} />
     <Route path="/investigate" element={<Investigate />} /><Route path="/workspace" element={<Workspace />} />
+    <Route path="/code-review" element={<CodeReview />} />
     <Route path="/artifacts" element={<Workspace defaultTab="artifacts" />} /><Route path="/activity" element={<Activity />} />
     <Route path="/databases" element={<Databases />} />
     <Route path="/konga" element={<Konga />} /><Route path="/openshift" element={<Openshift />} /><Route path="/confluent" element={<Confluent />} /><Route path="/settings" element={<Settings />} />

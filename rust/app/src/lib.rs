@@ -5,6 +5,7 @@ pub mod databases;
 pub mod integrations;
 pub mod machines;
 pub mod pilot;
+pub mod scm;
 pub mod store;
 #[cfg(test)]
 mod tests;
@@ -27,6 +28,8 @@ pub struct AppState {
     pub data_dir: PathBuf,
     pub client: reqwest::Client,
     pub origin: Arc<RwLock<String>>,
+    pub(crate) external_open: Option<fn(&str) -> std::io::Result<()>>,
+    pub(crate) review_previews: Arc<scm::Previews>,
 }
 
 #[derive(Clone, Debug)]
@@ -94,6 +97,8 @@ impl AppState {
             data_dir,
             client,
             origin: Arc::new(RwLock::new(String::new())),
+            external_open: None,
+            review_previews: Arc::default(),
         })
     }
     pub fn authenticate(&self, headers: &HeaderMap) -> Result<User, AppError> {
@@ -115,6 +120,7 @@ pub fn router(state: AppState, frontend_dir: PathBuf) -> Router {
         .merge(databases::router())
         .merge(integrations::router())
         .merge(pilot::router())
+        .merge(scm::router())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_user,
@@ -152,7 +158,19 @@ pub async fn serve(
     ready: std::sync::mpsc::Sender<String>,
     shutdown: CancellationToken,
 ) -> Result<(), AppError> {
-    let state = AppState::new(data_dir)?;
+    serve_with_external_open(data_dir, frontend_dir, port, ready, shutdown, None).await
+}
+
+pub async fn serve_with_external_open(
+    data_dir: PathBuf,
+    frontend_dir: PathBuf,
+    port: u16,
+    ready: std::sync::mpsc::Sender<String>,
+    shutdown: CancellationToken,
+    external_open: Option<fn(&str) -> std::io::Result<()>>,
+) -> Result<(), AppError> {
+    let mut state = AppState::new(data_dir)?;
+    state.external_open = external_open;
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
         .await
         .map_err(|_| AppError::internal("Cannot bind local HTTP server"))?;

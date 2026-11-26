@@ -14,6 +14,8 @@ fn fixture() -> Result<(AppState, tempfile::TempDir), AppError> {
         data_dir: directory.path().to_owned(),
         client: reqwest::Client::new(),
         origin: Arc::new(RwLock::new("http://localhost:3399".into())),
+        external_open: None,
+        review_previews: Arc::default(),
     };
     Ok((state, directory))
 }

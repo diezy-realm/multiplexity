@@ -219,6 +219,25 @@ impl Store {
                 )
                 .map_err(db_error)?;
         }
+        let has_ghes_ca = connection
+            .prepare("SELECT ghes_ca_pem FROM pilot_connectors LIMIT 0")
+            .is_ok();
+        if !has_ghes_ca {
+            connection.execute("ALTER TABLE pilot_connectors ADD COLUMN ghes_ca_pem TEXT NOT NULL DEFAULT ''", [])
+                .map_err(db_error)?;
+        }
+        connection.execute_batch(
+            "CREATE TABLE IF NOT EXISTS scm_cache(
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                profile_key TEXT NOT NULL,
+                section_key TEXT NOT NULL,
+                ciphertext TEXT NOT NULL,
+                iv TEXT NOT NULL,
+                auth_tag TEXT NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(user_id, profile_key, section_key)
+            );"
+        ).map_err(db_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
             key,

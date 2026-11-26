@@ -14,6 +14,8 @@ fn state(directory: &std::path::Path) -> AppState {
         data_dir: directory.to_owned(),
         client: reqwest::Client::new(),
         origin: Arc::new(RwLock::new(String::new())),
+        external_open: None,
+        review_previews: Arc::default(),
     }
 }
 fn user() -> User {

@@ -120,6 +120,41 @@ pub fn shutdown() {
     }
 }
 
+pub(crate) fn review_stream(
+    state: &AppState,
+    user: &str,
+    connection: Option<settings::Connection>,
+    destination: String,
+    input: String,
+    source: Value,
+) -> Result<Response, AppError> {
+    let operation = Operation::begin(state, &format!("review:{user}"))?;
+    let cancel = operation.cancel.clone();
+    let stream = async_stream::stream! {
+        let _operation = operation;
+        yield Ok::<Event, Infallible>(Event::default().data(json!({"type":"status","stage":"running"}).to_string()));
+        let result = if let Some(connection) = connection {
+            provider::complete_review(&connection, &destination, &input, &cancel).await
+        } else {
+            tokio::select! {
+                _ = cancel.cancelled() => Err(AppError::bad_request("Permintaan dibatalkan.")),
+                _ = tokio::time::sleep(Duration::from_millis(750)) => Ok(format!(
+                    "### Simulasi lokal\n\nKutipan berasal dari sisi **{}** pada baris **{}–{}**. Bandingkan baris tersebut dengan sisi lain untuk memeriksa perilaku sebelum dan sesudah perubahan. Hasil ini dibuat dari fixture sintetis.",
+                    source["side"].as_str().unwrap_or(""), source["start"], source["end"]
+                ))
+            }
+        };
+        let event = match result {
+            Ok(message) => json!({"type":"done","message":message}),
+            Err(error) => json!({"type":"error","error":error.message}),
+        };
+        yield Ok::<Event, Infallible>(Event::default().data(event.to_string()));
+    };
+    Ok(Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
+}
+
 async fn get_settings(State(state): State<AppState>) -> ApiResult {
     Ok(Json(settings::public(&state).await?))
 }
@@ -526,7 +561,9 @@ async fn chat(
     }
     if text(&body, "permission") == "ask"
         && (body["sources"].as_array().is_some_and(|v| !v.is_empty())
-            || body["evidenceIds"].as_array().is_some_and(|v| !v.is_empty()))
+            || body["evidenceIds"]
+                .as_array()
+                .is_some_and(|v| !v.is_empty()))
         && body["approved"] != true
     {
         return Ok((StatusCode::PRECONDITION_REQUIRED,Json(json!({"approvalRequired":true,"error":"Izinkan membaca dan mengirim sumber log yang dipilih?"}))).into_response());
