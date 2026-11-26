@@ -81,6 +81,7 @@ async fn change_password(
 }
 fn scope_valid(scope: &str) -> bool {
     scope == "vm-cards"
+        || scope == "infra-nav"
         || scope.strip_prefix("service-cards:").is_some_and(|value| {
             !value.is_empty()
                 && value.len() < 136

@@ -39,7 +39,7 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-fn string<'a>(v: &'a Value, key: &str) -> &'a str {
+pub(crate) fn string<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
 }
 fn param<'a>(q: &'a HashMap<String, String>, key: &str) -> &'a str {
@@ -359,7 +359,7 @@ async fn kong_delete(
 ) -> ApiResult {
     kong_mutate(s, u, b, Method::DELETE).await
 }
-async fn kong_mutate(state: AppState, user: User, body: Value, method: Method) -> ApiResult {
+pub(crate) async fn kong_mutate(state: AppState, user: User, body: Value, method: Method) -> ApiResult {
     if body.to_string().len() > 16000 {
         return Err(bad("Data terlalu besar."));
     }
@@ -856,6 +856,58 @@ async fn ocp_delete(
     )?;
     Ok(Json(json!({"success":removed>0})))
 }
+pub(crate) async fn ocp_rollout_restart(
+    state: &AppState,
+    user: &User,
+    cluster_id: &str,
+    project: &str,
+    name: &str,
+    kind: &str,
+) -> Result<Value, AppError> {
+    let row = connection(
+        state,
+        user,
+        "openshift_clusters",
+        (!cluster_id.is_empty()).then_some(cluster_id),
+    )?
+    .ok_or_else(|| {
+        AppError::new(
+            StatusCode::CONFLICT,
+            "Hubungkan OpenShift API terlebih dahulu.",
+        )
+    })?;
+    let project = k8s_name(project)?;
+    let name = k8s_name(name)?;
+    let (endpoint, method, data, content_type) = if kind == "DeploymentConfig" {
+        (
+            format!(
+                "/apis/apps.openshift.io/v1/namespaces/{project}/deploymentconfigs/{name}/instantiate"
+            ),
+            Method::POST,
+            json!({"kind":"DeploymentRequest","apiVersion":"apps.openshift.io/v1","name":name,"latest":true,"force":true}),
+            "application/json",
+        )
+    } else {
+        (
+            format!("/apis/apps/v1/namespaces/{project}/deployments/{name}"),
+            Method::PATCH,
+            json!({"spec":{"template":{"metadata":{"annotations":{"kubectl.kubernetes.io/restartedAt":chrono::Utc::now().to_rfc3339()}}}}}),
+            "application/strategic-merge-patch+json",
+        )
+    };
+    remote_json(
+        string(&row, "api_url"),
+        &token(state, &row)?,
+        &endpoint,
+        method,
+        Some(&data),
+        false,
+        row["insecure_tls"] == 1,
+        content_type,
+    )
+    .await
+}
+
 async fn ocp_action(
     State(state): State<AppState>,
     Extension(user): Extension<User>,

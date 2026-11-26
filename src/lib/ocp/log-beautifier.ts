@@ -1,3 +1,5 @@
+import { expandNestedJsonStrings, stripAnsiCodes } from '@/lib/toolbox/utils';
+
 export type LogSeverity = 'error' | 'warn' | 'info' | 'debug' | 'default';
 
 export interface BeautifiedJsonLine {
@@ -18,52 +20,7 @@ export interface PlainTextLogLine {
 
 export type ParsedBeautifyLogLine = BeautifiedJsonLine | PlainTextLogLine;
 
-function stripAnsiCodes(input: string): string {
-  // eslint-disable-next-line no-control-regex
-  return input.replace(/\x1b\[[0-9;]*m/g, '');
-}
-
-/**
- * Recursively expands string values that contain JSON objects or arrays
- * up to `maxDepth`.
- */
-export function expandNestedJsonStrings(value: unknown, depth = 0, maxDepth = 5): unknown {
-  if (depth >= maxDepth || value === null || value === undefined) {
-    return value;
-  }
-
-  if (typeof value === 'string') {
-    const trimmed = value.trim();
-    if (
-      trimmed.length >= 2 &&
-      ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
-        (trimmed.startsWith('[') && trimmed.endsWith(']')))
-    ) {
-      try {
-        const parsed = JSON.parse(trimmed) as unknown;
-        return expandNestedJsonStrings(parsed, depth + 1, maxDepth);
-      } catch {
-        return value;
-      }
-    }
-    return value;
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(item => expandNestedJsonStrings(item, depth + 1, maxDepth));
-  }
-
-  if (typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    const out: Record<string, unknown> = {};
-    for (const key of Object.keys(obj)) {
-      out[key] = expandNestedJsonStrings(obj[key], depth + 1, maxDepth);
-    }
-    return out;
-  }
-
-  return value;
-}
+export { expandNestedJsonStrings };
 
 function detectSeverityFromText(text: string): LogSeverity {
   if (/\b(error|fatal|panic|critical|err|failed|exception)\b/i.test(text)) return 'error';

@@ -7,10 +7,13 @@ import '@/styles/globals.css';
 
 const VirtualMachines=lazy(()=>import('@/pages/VirtualMachines'));
 const Chat=lazy(()=>import('@/pages/Chat'));
-const Artifacts=lazy(()=>import('@/pages/Artifacts'));
+const Investigate=lazy(()=>import('@/pages/Investigate'));
+const Workspace=lazy(()=>import('@/pages/Workspace'));
+const Activity=lazy(()=>import('@/pages/Activity'));
 const Databases=lazy(()=>import('@/pages/Databases'));
 const Konga=lazy(()=>import('@/pages/Konga'));
 const Openshift=lazy(()=>import('@/pages/Openshift'));
+const Confluent=lazy(()=>import('@/pages/Confluent'));
 const Settings=lazy(()=>import('@/pages/Settings'));
 function Loading(){return <div role="status" className="p-5 text-sm text-gray-500">Memuat…</div>;}
 class AppBoundary extends Component<{children:ReactNode},{failed:boolean}> {
@@ -31,8 +34,10 @@ createRoot(document.getElementById('root')!).render(<AppBoundary><BrowserRouter>
   <Route path="/login" element={<Login />} />
   <Route element={<Protected />}>
     <Route path="/" element={<VirtualMachines />} /><Route path="/chat" element={<Chat />} />
-    <Route path="/artifacts" element={<Artifacts />} /><Route path="/databases" element={<Databases />} />
-    <Route path="/konga" element={<Konga />} /><Route path="/openshift" element={<Openshift />} /><Route path="/settings" element={<Settings />} />
+    <Route path="/investigate" element={<Investigate />} /><Route path="/workspace" element={<Workspace />} />
+    <Route path="/artifacts" element={<Workspace defaultTab="artifacts" />} /><Route path="/activity" element={<Activity />} />
+    <Route path="/databases" element={<Databases />} />
+    <Route path="/konga" element={<Konga />} /><Route path="/openshift" element={<Openshift />} /><Route path="/confluent" element={<Confluent />} /><Route path="/settings" element={<Settings />} />
   </Route>
   <Route path="*" element={<div className="p-5">Halaman tidak ditemukan. <a href="/">Kembali</a></div>} />
 </Routes></Suspense></BrowserRouter></AppBoundary>);

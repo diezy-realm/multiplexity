@@ -406,7 +406,7 @@ async fn service_logs(
         json!({"unit":unit,"lines":lines,"logs":logs,"timestamp":now()}),
     ))
 }
-async fn service_action(
+pub(crate) async fn service_action(
     State(state): State<AppState>,
     Extension(user): Extension<User>,
     Path(id): Path<String>,
@@ -554,7 +554,7 @@ async fn read_file(
         json!({"path":path,"filename":path.rsplit('/').next(),"size":content.len(),"content":content}),
     ))
 }
-async fn save_file(
+pub(crate) async fn save_file(
     State(state): State<AppState>,
     Extension(user): Extension<User>,
     Path(id): Path<String>,

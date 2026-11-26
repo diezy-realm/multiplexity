@@ -23,13 +23,15 @@ Atlassian menjadwalkan akhir masa layanan produk Data Center yang terdampak pada
 
 ## Menu dan alur yang disarankan
 
-| Titik masuk | Aksi awal | Nilai bagi developer |
+Untuk menjaga konsistensi dengan [roadmap produk](local-first-roadmap.md#dasar-desain-navigasi-dan-plugin) dan [backlog](tickets.md), titik masuk riset (*Connections*, *Delivery*, *Findings*, *Operations*) dipetakan ke struktur navigasi target berikut:
+
+| Titik masuk target | Aksi awal | Nilai bagi developer |
 | --- | --- | --- |
-| **Settings → Connections** | Tambahkan koneksi, pilih edisi dan metode autentikasi, uji akses baca, tampilkan versi atau capability yang dapat dibuktikan. | Satu profil per akun dan instance, termasuk URL dasar/context path, CA internal, label lingkungan, dan uji akses yang bisa diulang. |
-| **Delivery** | Buka tiket, lihat PR, periksa hasil build. Setiap kartu menyertakan asal dan tautan resmi. | Menjalankan alur tiket → pull request → hasil build dari satu tempat. |
-| **Findings** | Pilih proyek, commit/branch dan scan. Filter SAST, SCA, serta quality gate. Buka temuan asli atau kirim konteks terpilih ke Chat. | Memulai perbaikan berdasarkan bukti scan yang sudah ada dan tahu hasil mana yang sudah usang. |
-| **Chat dan Artifacts** | Lampirkan pilihan issue, PR, hasil build, dan temuan; simpan diagnosis, diff, serta laporan validasi. | Pengguna dapat melihat sumber, meninjau perubahan, dan memakai ulang hasil kerja. |
-| **Operations** | Tautkan VM, OpenShift, Kong, dan Database yang sudah ada ke konteks delivery. Tambahkan Confluent melalui tab metadata setelah ada kebutuhan pilot. | Hubungkan layanan yang sedang ditangani dengan tiket atau build yang relevan. |
+| **Settings → Integrations** *(sebelumnya Connections)* | Tambahkan koneksi, pilih edisi dan metode autentikasi, uji akses baca, tampilkan versi atau capability yang dapat dibuktikan. | Satu profil per akun dan instance, termasuk URL dasar/context path, CA internal, label lingkungan, dan uji akses yang bisa diulang. |
+| **Investigate** *(konteks Delivery & Findings)* | Buka kasus/service, tautkan tiket, lihat PR/build, pilih proyek/commit/scan, dan filter temuan SAST, SCA, serta quality gate. Buka temuan asli atau kirim konteks terpilih ke Chat. | Menjalankan alur tiket → pull request → hasil build dan memulai perbaikan dari bukti scan yang sudah ada dalam satu tempat. |
+| **Chat dan Workspace (Changes / Artifacts)** | Lampirkan pilihan issue, PR, hasil build, dan temuan; simpan diagnosis, tinjau diff lokal, serta simpan laporan validasi. | Pengguna dapat melihat sumber, meninjau perubahan pada checkout lokal, dan memakai ulang hasil kerja. |
+| **Infrastructure** *(sebelumnya Operations)* | Tautkan VM Machines, Databases, Konga, dan OpenShift yang sudah ada ke konteks investigasi. Tambahkan Confluent melalui kartu metadata setelah ada kebutuhan pilot. | Hubungkan layanan yang sedang ditangani dengan tiket atau build yang relevan. |
+| **Activity** | Simpan dan telusuri Operation Receipt yang tersanitasi untuk aksi operasional non-produksi. | Memastikan hasil sesudah aksi remote dan menindaklanjuti kegagalan tanpa tombol eksekusi ulang otomatis. |
 
 Untuk relasi, simpan identitas dengan namespace instance. Jira issue key, repo ID, PR, commit SHA, Bamboo plan/result key, Sonar project/analysis, dan Checkmarx project/scan ID dapat berulang di instance berbeda. Prioritaskan relasi eksplisit dari provider atau konfigurasi proyek. Tandai pencocokan key pada branch atau judul PR sebagai kandidat dan sediakan pilihan koreksi. Tampilkan timestamp sumber dan status parsial jika konektor sedang gagal atau aksesnya terbatas.
 

@@ -10,6 +10,17 @@ async fn main() -> Result<(), AppError> {
     let data = std::env::var_os("MULTIPLEXITY_DATA_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(".local-dev/rust"));
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if !arguments.is_empty() {
+        if arguments.len() != 2 || arguments[0] != "--recover-key-from" {
+            return Err(AppError::bad_request(
+                "Usage: multiplexity-server [--recover-key-from <previous-data-directory>]",
+            ));
+        }
+        multiplexity_backend::store::recover_key_reference(&data, &PathBuf::from(&arguments[1]))?;
+        println!("Encryption key reference recovered. Existing data was preserved.");
+        return Ok(());
+    }
     let frontend = std::env::var_os("MULTIPLEXITY_FRONTEND_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("dist/client"));

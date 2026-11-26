@@ -65,7 +65,7 @@ Dashboard modern dan komprehensif untuk monitoring, manajemen Virtual Machine (V
 
 ```bash
 git clone <repo-url>
-cd manager-system-internal
+cd multiplexity
 npm install
 ```
 

@@ -32,7 +32,51 @@ export default function OpenshiftLogsModal({
   const [searchQuery, setSearchQuery] = useState('');
   const [copied, setCopied] = useState(false);
   const [showAIModal, setShowAIModal] = useState(false);
+  const [savingCase, setSavingCase] = useState(false);
+  const [savedCaseId, setSavedCaseId] = useState('');
   const logContainerRef = useRef<HTMLDivElement>(null);
+
+  async function saveToCase() {
+    if (!logs) return;
+    setSavingCase(true);
+    try {
+      const selected = window.getSelection()?.toString().trim();
+      const excerpt = (selected || logs).slice(-16000);
+      const created = await fetch('/api/cases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: `Log ${pod}`,
+          serviceName: pod,
+          environment: project,
+          namespace: project,
+          workload: pod,
+        }),
+      });
+      const caseData = await created.json();
+      if (!created.ok) throw new Error(caseData.error || 'Gagal membuat kasus.');
+      const caseId = caseData.case.id as string;
+      const ev = await fetch(`/api/cases/${encodeURIComponent(caseId)}/evidence`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceType: 'openshift_log',
+          clusterLabel: clusterId || 'default',
+          namespace: project,
+          pod,
+          source: `/openshift/${project}/pods/${pod}/log`,
+          sourceTime: new Date().toISOString(),
+          content: excerpt,
+        }),
+      });
+      if (!ev.ok) throw new Error('Gagal menyimpan cuplikan ke kasus.');
+      setSavedCaseId(caseId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Gagal menyimpan ke kasus.');
+    } finally {
+      setSavingCase(false);
+    }
+  }
 
   const fetchLogs = useCallback(
     async (isSilent = false) => {
@@ -186,6 +230,23 @@ export default function OpenshiftLogsModal({
                 {copied ? <Check aria-hidden="true" size={13} className="text-emerald-400" /> : <Copy aria-hidden="true" size={13} />}
                 <span>{copied ? 'Tersalin' : 'Salin'}</span>
               </button>
+
+              <button
+                type="button"
+                onClick={() => void saveToCase()}
+                disabled={!logs || savingCase}
+                className="ui-button"
+                title="Simpan cuplikan log ke Evidence Case"
+              >
+                <FileText aria-hidden="true" size={13} />
+                <span>{savingCase ? 'Menyimpan…' : 'Simpan ke Kasus'}</span>
+              </button>
+
+              {savedCaseId && (
+                <a href={`/investigate?caseId=${encodeURIComponent(savedCaseId)}`} className="ui-button text-emerald-400">
+                  Buka Kasus
+                </a>
+              )}
 
               <button
                 type="button"

@@ -8,6 +8,8 @@ use rusqlite::{
 };
 use serde_json::{Map, Value, json};
 use std::{path::Path, sync::Mutex, time::Duration};
+#[cfg(any(windows, test))]
+mod key_identity;
 
 pub struct Store {
     connection: Mutex<Connection>,
@@ -78,6 +80,145 @@ impl Store {
             }
         }
         connection.execute_batch("CREATE TABLE IF NOT EXISTS rust_sessions(token_hash TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,expires INTEGER NOT NULL);CREATE INDEX IF NOT EXISTS rust_session_expiry ON rust_sessions(expires);").map_err(db_error)?;
+        connection.execute_batch(
+            r#"CREATE TABLE IF NOT EXISTS evidence_cases(
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                title TEXT NOT NULL,
+                service_name TEXT NOT NULL DEFAULT '',
+                environment TEXT NOT NULL DEFAULT '',
+                namespace_name TEXT NOT NULL DEFAULT '',
+                workload_name TEXT NOT NULL DEFAULT '',
+                repo_path TEXT NOT NULL DEFAULT '',
+                revision TEXT NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS evidence_cases_user_idx ON evidence_cases(user_id, updated_at DESC);
+            CREATE TABLE IF NOT EXISTS evidence_items(
+                id TEXT PRIMARY KEY,
+                case_id TEXT NOT NULL REFERENCES evidence_cases(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL,
+                source_type TEXT NOT NULL CHECK(source_type IN ('openshift_log','sarif','ci_run','note')),
+                cluster_label TEXT NOT NULL DEFAULT '',
+                namespace_name TEXT NOT NULL DEFAULT '',
+                pod_name TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                source_time TEXT NOT NULL DEFAULT '',
+                redaction_status TEXT NOT NULL DEFAULT 'clean',
+                dedup_key TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS evidence_items_case_idx ON evidence_items(case_id, user_id, created_at DESC);
+            CREATE TABLE IF NOT EXISTS pilot_connectors(
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('bamboo','sonarqube','jira','bitbucket','ghes','checkmarx','confluent')),
+                label TEXT NOT NULL,
+                base_url TEXT NOT NULL,
+                auth_type TEXT NOT NULL DEFAULT 'bearer',
+                token_encrypted TEXT NOT NULL DEFAULT '',
+                token_iv TEXT NOT NULL DEFAULT '',
+                token_auth_tag TEXT NOT NULL DEFAULT '',
+                insecure_tls INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_status TEXT NOT NULL DEFAULT 'untested',
+                last_version TEXT NOT NULL DEFAULT '',
+                last_checked_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS user_policies(
+                user_id TEXT PRIMARY KEY,
+                allowed_nonprod_envs TEXT NOT NULL DEFAULT '["dev","development","sit","uat","staging","qa","nonprod","sandbox"]',
+                custom_redaction_patterns TEXT NOT NULL DEFAULT '[]',
+                max_ai_payload_chars INTEGER NOT NULL DEFAULT 32000,
+                allowed_test_commands TEXT NOT NULL DEFAULT '[]',
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS mcp_servers(
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                label TEXT NOT NULL,
+                transport TEXT NOT NULL CHECK(transport IN ('stdio','http')),
+                target TEXT NOT NULL,
+                args_json TEXT NOT NULL DEFAULT '[]',
+                token_encrypted TEXT NOT NULL DEFAULT '',
+                token_iv TEXT NOT NULL DEFAULT '',
+                token_auth_tag TEXT NOT NULL DEFAULT '',
+                insecure_tls INTEGER NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                last_status TEXT NOT NULL DEFAULT 'untested',
+                tools_json TEXT NOT NULL DEFAULT '[]',
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS jira_drafts(
+                id TEXT PRIMARY KEY,
+                case_id TEXT NOT NULL REFERENCES evidence_cases(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL,
+                project_key TEXT NOT NULL DEFAULT '',
+                summary TEXT NOT NULL,
+                body TEXT NOT NULL DEFAULT '',
+                acceptance_criteria TEXT NOT NULL DEFAULT '',
+                evidence_links_json TEXT NOT NULL DEFAULT '[]',
+                issue_key TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'draft',
+                idempotency_key TEXT NOT NULL DEFAULT '',
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS operation_receipts(
+                id TEXT PRIMARY KEY,
+                case_id TEXT,
+                user_id TEXT NOT NULL,
+                actor TEXT NOT NULL,
+                action_type TEXT NOT NULL,
+                cluster_id TEXT NOT NULL DEFAULT '',
+                cluster_label TEXT NOT NULL DEFAULT '',
+                namespace_name TEXT NOT NULL DEFAULT '',
+                workload_name TEXT NOT NULL DEFAULT '',
+                workload_kind TEXT NOT NULL DEFAULT '',
+                environment TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL CHECK(status IN ('success','denied','timeout','unknown')),
+                summary TEXT NOT NULL DEFAULT '',
+                post_check TEXT NOT NULL DEFAULT '',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS operation_receipts_user_idx ON operation_receipts(user_id, created_at DESC);"#,
+        ).map_err(db_error)?;
+        if let Ok(sql) = connection.query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='pilot_connectors'",
+            [],
+            |row| row.get::<_, String>(0),
+        ) && !sql.contains("confluent")
+        {
+            connection
+                .execute_batch(
+                    "ALTER TABLE pilot_connectors RENAME TO pilot_connectors_old;
+                     CREATE TABLE pilot_connectors(
+                        id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL,
+                        kind TEXT NOT NULL CHECK(kind IN ('bamboo','sonarqube','jira','bitbucket','ghes','checkmarx','confluent')),
+                        label TEXT NOT NULL,
+                        base_url TEXT NOT NULL,
+                        auth_type TEXT NOT NULL DEFAULT 'bearer',
+                        token_encrypted TEXT NOT NULL DEFAULT '',
+                        token_iv TEXT NOT NULL DEFAULT '',
+                        token_auth_tag TEXT NOT NULL DEFAULT '',
+                        insecure_tls INTEGER NOT NULL DEFAULT 0,
+                        enabled INTEGER NOT NULL DEFAULT 1,
+                        last_status TEXT NOT NULL DEFAULT 'untested',
+                        last_version TEXT NOT NULL DEFAULT '',
+                        last_checked_at DATETIME,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                     );
+                     INSERT INTO pilot_connectors SELECT * FROM pilot_connectors_old;
+                     DROP TABLE pilot_connectors_old;",
+                )
+                .map_err(db_error)?;
+        }
         Ok(Self {
             connection: Mutex::new(connection),
             key,
@@ -185,36 +326,7 @@ fn sql_value(value: &Value) -> SqlValue {
 fn load_key(directory: &Path) -> Result<[u8; 32], AppError> {
     #[cfg(windows)]
     {
-        use sha2::{Digest, Sha256};
-        let identity = hex::encode(Sha256::digest(
-            directory
-                .canonicalize()
-                .map_err(io_error)?
-                .to_string_lossy()
-                .as_bytes(),
-        ));
-        let entry = keyring::Entry::new("Multiplexity Rust", &identity)
-            .map_err(|_| AppError::internal("Credential manager unavailable"))?;
-        match entry.get_password() {
-            Ok(value) => hex::decode(value)
-                .ok()
-                .and_then(|bytes| bytes.try_into().ok())
-                .ok_or_else(|| AppError::internal("Stored encryption key is invalid")),
-            Err(keyring::Error::NoEntry) => {
-                if directory.join("multiplexity.db").exists() {
-                    return Err(AppError::internal(
-                        "Encryption key missing; existing Rust data was preserved",
-                    ));
-                }
-                let mut key = [0; 32];
-                rand::thread_rng().fill_bytes(&mut key);
-                entry
-                    .set_password(&hex::encode(key))
-                    .map_err(|_| AppError::internal("Cannot protect encryption key"))?;
-                Ok(key)
-            }
-            Err(_) => Err(AppError::internal("Cannot unlock credential manager")),
-        }
+        key_identity::load(directory, &key_identity::WindowsVault)
     }
     #[cfg(not(windows))]
     {
@@ -255,6 +367,20 @@ fn load_key(directory: &Path) -> Result<[u8; 32], AppError> {
             }
             Err(error) => Err(io_error(error)),
         }
+    }
+}
+
+pub fn recover_key_reference(directory: &Path, source: &Path) -> Result<(), AppError> {
+    #[cfg(windows)]
+    {
+        key_identity::recover(directory, source, &key_identity::WindowsVault)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (directory, source);
+        Err(AppError::bad_request(
+            "Key reference recovery is only required on Windows",
+        ))
     }
 }
 

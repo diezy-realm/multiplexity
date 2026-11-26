@@ -4,6 +4,7 @@ pub mod core;
 pub mod databases;
 pub mod integrations;
 pub mod machines;
+pub mod pilot;
 pub mod store;
 #[cfg(test)]
 mod tests;
@@ -113,6 +114,7 @@ pub fn router(state: AppState, frontend_dir: PathBuf) -> Router {
         .merge(machines::router())
         .merge(databases::router())
         .merge(integrations::router())
+        .merge(pilot::router())
         .route_layer(middleware::from_fn_with_state(
             state.clone(),
             auth::require_user,

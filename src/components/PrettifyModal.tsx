@@ -2,37 +2,9 @@
 
 import { useMemo, useState } from 'react';
 import { Copy, X } from 'lucide-react';
+import { expandNestedJsonStrings, stripAnsiCodes } from '@/lib/toolbox/utils';
 
-/**
- * Recursively expand string values that contain valid JSON.
- * e.g. trace: "[{\"host\":...}]" → trace: [{host:...}]
- */
-function expandJsonStrings(obj: any): any {
-  if (obj === null || obj === undefined) return obj;
-  if (typeof obj === 'string') {
-    const trimmed = obj.trim();
-    if ((trimmed.startsWith('{') || trimmed.startsWith('[')) && trimmed.length > 2) {
-      try {
-        const parsed = JSON.parse(trimmed);
-        return expandJsonStrings(parsed);
-      } catch {
-        return obj;
-      }
-    }
-    return obj;
-  }
-  if (Array.isArray(obj)) {
-    return obj.map(expandJsonStrings);
-  }
-  if (typeof obj === 'object') {
-    const result: any = {};
-    for (const key of Object.keys(obj)) {
-      result[key] = expandJsonStrings(obj[key]);
-    }
-    return result;
-  }
-  return obj;
-}
+const expandJsonStrings = expandNestedJsonStrings;
 
 interface PrettifyModalProps {
   isOpen: boolean;
@@ -45,8 +17,7 @@ export default function PrettifyModal({ isOpen, onClose, rawText }: PrettifyModa
 
   // Strip ANSI codes and try to parse/format JSON
   const formatted = useMemo(() => {
-    // eslint-disable-next-line no-control-regex
-    const clean = rawText.replace(/\x1b\[[0-9;]*m/g, '').trim();
+    const clean = stripAnsiCodes(rawText).trim();
 
     // Try to find and format JSON objects in the text
     const results: { type: 'json' | 'text'; content: any }[] = [];
