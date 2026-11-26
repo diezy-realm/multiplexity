@@ -1,5 +1,5 @@
 import { canUseLocalCli } from '@/lib/runtime';
-import { type ChatAttachment, type ChatMessage, type ProviderId, type Effort, type Permission, supportsEffort } from './catalog';
+import { API_ENDPOINTS, type ChatAttachment, type ChatMessage, type ProviderId, type Effort, type Permission, supportsEffort } from './catalog';
 import { workspaceInstructions } from './workspace';
 import { executeWorkspaceTool, workspaceTools } from './workspace-tools';
 import { getConnection } from './settings';
@@ -20,17 +20,17 @@ export async function complete(provider: ProviderId, model: string, effort: Effo
   if (images.length && !['openai','claude','codex','gemini','ollama','custom'].includes(provider)) throw new Error('Provider belum mendukung gambar.');
   const imageUrl = (image: ChatAttachment) => 'data:' + image.mediaType + ';base64,' + image.content;
   const request = (url:string,headers:Record<string,string>,body:Record<string,unknown>,protocol:'responses'|'messages'|'chat') => observe ? providerStreamRequest(url,headers,body,signal,protocol,observe) : providerRequest(url,headers,body,signal);
-  if (['gemini','ollama','custom'].includes(provider)) {
-    if (!selectedModel) throw new Error('Pilih model di AI Management.');
-    if (provider === 'custom' && !connection.endpoint) throw new Error('Simpan endpoint Custom API terlebih dahulu.');
-    const endpoint = connection.endpoint || (provider === 'gemini' ? 'https://generativelanguage.googleapis.com/v1beta/openai' : 'http://127.0.0.1:11434/v1');
+  if (['gemini','ollama','custom','openrouter','groq','grok'].includes(provider)) {
+    if (!selectedModel) throw new Error('Pilih model di AI Provider.');
+    const endpoint = connection.endpoint || API_ENDPOINTS[provider];
+    if (!endpoint) throw new Error('Simpan endpoint API terlebih dahulu.');
     const messages = input.map((message,index)=> index === input.length-1 && images.length ? {...message,content:[{type:'text',text:message.content},...images.map(image=>({type:'image_url',image_url:{url:imageUrl(image)}}))]} : message);
     const data = await request(endpoint.replace(/\/$/,'') + '/chat/completions', connection.apiKey ? {Authorization:'Bearer ' + connection.apiKey} : {}, {model:selectedModel,messages:[{role:'system',content:system},...messages],stream:false},'chat');
     const text = (data.choices as {message?:{content?:string}}[] | undefined)?.[0]?.message?.content;
     if (!text) throw new Error('Provider tidak mengembalikan respons teks.'); return text;
   }
   if (provider === 'openai') {
-    if (!connection.apiKey || !selectedModel) throw new Error('Lengkapi API key dan model OpenAI di AI Management.');
+    if (!connection.apiKey || !selectedModel) throw new Error('Lengkapi API key dan model OpenAI di AI Provider.');
     const requestBody = {
       model: selectedModel, instructions: system, input, max_output_tokens: 4096, store: false,
       ...(effort !== 'default' && supportsEffort(provider, selectedModel) ? { reasoning: { effort } } : {}),
@@ -55,7 +55,7 @@ export async function complete(provider: ProviderId, model: string, effort: Effo
     return text;
   }
   if (provider === 'claude') {
-    if (!connection.apiKey || !selectedModel) throw new Error('Lengkapi API key dan model Claude di AI Management.');
+    if (!connection.apiKey || !selectedModel) throw new Error('Lengkapi API key dan model Claude di AI Provider.');
     const items: unknown[] = input.map((message,index)=>index===input.length-1 && images.length ? {...message,content:[...images.map(image=>({type:'image',source:{type:'base64',media_type:image.mediaType,data:image.content}})),{type:'text',text:message.content}]} : message); let data: Record<string,unknown> = {};
     const tools = workspaceTools.filter(tool => permission === 'allow-all' || tool.name !== 'write_artifact').map(tool=>({ name:tool.name,description:tool.description,input_schema:tool.parameters }));
     for (let turn = 0; turn < 6; turn++) {
@@ -72,7 +72,7 @@ export async function complete(provider: ProviderId, model: string, effort: Effo
   }
   if (!canUseLocalCli()) throw new Error('CLI tersedia pada desktop atau development lokal.');
   const executable = findCli(provider, connection.cliPath);
-  if (!executable) throw new Error('CLI belum ditemukan. Pasang CLI resmi atau isi path executable di AI Management.');
+  if (!executable) throw new Error('CLI belum ditemukan. Pasang CLI resmi atau isi path executable di AI Provider.');
   const prompt = `${system}\n\nCONVERSATION:\n${input.map(message => `${message.role.toUpperCase()}: ${message.content}`).join('\n\n')}`;
   return runCli(provider, executable, selectedModel, effort, prompt, signal, connection.apiKey, permission, userId, images, observe);
 }

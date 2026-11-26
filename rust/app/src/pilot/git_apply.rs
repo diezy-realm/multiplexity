@@ -168,6 +168,35 @@ pub async fn inspect_repo(
     .map_err(|_| AppError::internal("Gagal memeriksa repository."))?
 }
 
+pub(crate) async fn verify_review_checkout(raw: String, expected_remote: String, expected_head: String) -> Result<String, AppError> {
+    tokio::task::spawn_blocking(move || {
+        let root = validate_repo_root(&raw)?;
+        let git_root = run_git(&root, &["rev-parse", "--show-toplevel"])?;
+        if !std::fs::canonicalize(git_root).is_ok_and(|path| path == root) {
+            return Err(AppError::bad_request("Gunakan direktori root checkout Git."));
+        }
+        let remote = run_git(&root, &["remote", "get-url", "origin"])
+            .map_err(|_| AppError::bad_request("Remote origin checkout tidak tersedia."))?;
+        let actual = url::Url::parse(&remote).ok().filter(|url| url.scheme() == "https"
+            && url.username().is_empty() && url.password().is_none() && url.query().is_none() && url.fragment().is_none());
+        let expected = url::Url::parse(&expected_remote).map_err(|_| AppError::internal("Origin PR tidak valid."))?;
+        if !actual.is_some_and(|url| {
+            let path = url.path().trim_end_matches('/');
+            url.origin() == expected.origin()
+                && path.strip_suffix(".git").unwrap_or(path).eq_ignore_ascii_case(expected.path())
+        }) {
+            return Err(AppError::bad_request("Remote origin HTTPS checkout berbeda dari repository PR."));
+        }
+        let head = run_git(&root, &["rev-parse", "HEAD"])?;
+        if head != expected_head {
+            return Err(AppError::new(axum::http::StatusCode::CONFLICT, "HEAD checkout berbeda dari head SHA PR."));
+        }
+        Ok(root.to_string_lossy().into_owned())
+    })
+    .await
+    .map_err(|_| AppError::internal("Gagal memeriksa checkout Code Review."))?
+}
+
 pub async fn preview_patch(
     State(_state): State<AppState>,
     Extension(_user): Extension<User>,

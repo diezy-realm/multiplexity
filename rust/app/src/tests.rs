@@ -14,6 +14,8 @@ fn fixture() -> Result<(AppState, tempfile::TempDir), AppError> {
         data_dir: directory.path().to_owned(),
         client: reqwest::Client::new(),
         origin: Arc::new(RwLock::new("http://localhost:3399".into())),
+        external_open: None,
+        review_previews: Arc::default(),
     };
     Ok((state, directory))
 }
@@ -262,5 +264,199 @@ fn workspace_rejects_traversal_and_accounts_are_isolated() -> Result<(), AppErro
         )
         .is_err()
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn library_connection_visibility_and_skill_lifecycle() -> Result<(), AppError> {
+    let (state, _directory) = fixture()?;
+    let app = router(state.clone(), _directory.path().to_owned());
+    let cookie = sign_in(&app).await;
+    let user = state
+        .db
+        .one("SELECT id FROM users WHERE username='testuser'", &[])?
+        .unwrap();
+    let owner = user["id"].as_str().unwrap();
+    let response = request(&app, Method::GET, "/api/library/apps", "", Value::Null).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let start =
+        value(request(&app, Method::GET, "/api/library/apps", &cookie, Value::Null).await).await;
+    assert_eq!(start["apps"]["konga"]["ready"], false);
+    let denied = request(
+        &app,
+        Method::PATCH,
+        "/api/library/apps/konga",
+        &cookie,
+        json!({"enabled":true}),
+    )
+    .await;
+    assert_eq!(denied.status(), StatusCode::BAD_REQUEST);
+    state.db.execute(
+        "INSERT INTO kong_connections(user_id,admin_url,token_encrypted) VALUES(?,?,?)",
+        &[
+            json!(owner),
+            json!("https://kong.example.test/admin?key=synthetic"),
+            json!("ciphertext-fixture"),
+        ],
+    )?;
+    let saved =
+        value(request(&app, Method::GET, "/api/library/apps", &cookie, Value::Null).await).await;
+    assert_eq!(saved["apps"]["konga"]["ready"], true);
+    assert_eq!(saved["apps"]["konga"]["enabled"], false);
+    assert_eq!(
+        saved["apps"]["konga"]["connections"][0]["endpoint"],
+        "https://kong.example.test/admin"
+    );
+    assert!(!saved.to_string().contains("ciphertext-fixture"));
+    let enabled = value(
+        request(
+            &app,
+            Method::PATCH,
+            "/api/library/apps/konga",
+            &cookie,
+            json!({"enabled":true}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(enabled["apps"]["konga"]["enabled"], true);
+    assert_eq!(enabled["apps"]["databases"]["enabled"], false);
+    state.db.execute(
+        "DELETE FROM kong_connections WHERE user_id=?",
+        &[json!(owner)],
+    )?;
+    let disconnected =
+        value(request(&app, Method::GET, "/api/library/apps", &cookie, Value::Null).await).await;
+    assert_eq!(disconnected["apps"]["konga"]["enabled"], false);
+
+    core::write_workspace(
+        &state,
+        owner,
+        "skills/example/SKILL.md",
+        "# Fixture workflow",
+        None,
+    )?;
+    core::write_workspace(
+        &state,
+        owner,
+        "skills/example/references/example.md",
+        "# Reference",
+        None,
+    )?;
+    let list = value(
+        request(
+            &app,
+            Method::GET,
+            "/api/library/skills",
+            &cookie,
+            Value::Null,
+        )
+        .await,
+    )
+    .await;
+    let skills = list["skills"].as_array().unwrap();
+    assert!(skills.iter().any(|item| item["id"] == "diagnose"));
+    assert!(
+        skills
+            .iter()
+            .any(|item| item["id"] == "skills/example/SKILL.md")
+    );
+    assert!(
+        !skills
+            .iter()
+            .any(|item| item["id"] == "skills/example/references/example.md")
+    );
+    let id = "skills/example/SKILL.md";
+    assert_eq!(
+        library::skills::selected_prompt(&state, owner, id)?.as_deref(),
+        Some("# Fixture workflow")
+    );
+    let off = value(
+        request(
+            &app,
+            Method::PATCH,
+            "/api/library/skill",
+            &cookie,
+            json!({"id":id,"enabled":false}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(off["enabled"], false);
+    assert!(library::skills::selected_prompt(&state, owner, id).is_err());
+    assert!(!core::workspace_file(&state, owner, id)?.exists());
+    assert!(core::workspace_file(&state, owner, "skills/example/references/example.md")?.exists());
+    let conflict = request(
+        &app,
+        Method::PATCH,
+        "/api/library/skill",
+        &cookie,
+        json!({"id":id,"content":"new","hash":"stale"}),
+    )
+    .await;
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+    let edited = value(
+        request(
+            &app,
+            Method::PATCH,
+            "/api/library/skill",
+            &cookie,
+            json!({"id":id,"content":"# Edited","hash":off["hash"]}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(edited["content"], "# Edited");
+    assert_eq!(edited["enabled"], false);
+    let on = value(
+        request(
+            &app,
+            Method::PATCH,
+            "/api/library/skill",
+            &cookie,
+            json!({"id":id,"enabled":true}),
+        )
+        .await,
+    )
+    .await;
+    assert_eq!(on["enabled"], true);
+    assert_eq!(
+        library::skills::selected_prompt(&state, owner, id)?.as_deref(),
+        Some("# Edited")
+    );
+    assert!(library::skills::selected_prompt(&state, "another-account", id).is_err());
+    let uri = format!(
+        "/api/library/skill?id={id}&hash={}",
+        on["hash"].as_str().unwrap()
+    );
+    assert_eq!(
+        request(&app, Method::DELETE, &uri, &cookie, Value::Null)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert!(library::skills::selected_prompt(&state, owner, id).is_err());
+    let default = value(
+        request(
+            &app,
+            Method::GET,
+            "/api/library/skill?id=skills/diagnose.md",
+            &cookie,
+            Value::Null,
+        )
+        .await,
+    )
+    .await;
+    let url = format!(
+        "/api/library/skill?id=skills/diagnose.md&hash={}",
+        default["hash"].as_str().unwrap()
+    );
+    assert_eq!(
+        request(&app, Method::DELETE, &url, &cookie, Value::Null)
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert!(!core::workspace_file(&state, owner, "skills/diagnose.md")?.exists());
     Ok(())
 }

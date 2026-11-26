@@ -5,6 +5,9 @@ import ollamaSvg from '@lobehub/icons-static-svg/icons/ollama.svg';
 import codexSvg from '@lobehub/icons-static-svg/icons/codex-color.svg';
 import kiroSvg from '@lobehub/icons-static-svg/icons/kiro-color.svg';
 import antigravitySvg from '@lobehub/icons-static-svg/icons/antigravity-color.svg';
+import openrouterSvg from '@lobehub/icons-static-svg/icons/openrouter-color.svg';
+import groqSvg from '@lobehub/icons-static-svg/icons/groq.svg';
+import grokSvg from '@lobehub/icons-static-svg/icons/grok.svg';
 import { Cpu } from 'lucide-react';
 import type { ProviderId } from '@/lib/ai/catalog';
 
@@ -16,6 +19,9 @@ const PROVIDER_ICONS: Partial<Record<ProviderId, string>> = {
   codex: codexSvg,
   kiro: kiroSvg,
   antigravity: antigravitySvg,
+  openrouter: openrouterSvg,
+  groq: groqSvg,
+  grok: grokSvg,
 };
 
 export default function ProviderBrandIcon({

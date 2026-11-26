@@ -4,6 +4,10 @@ use std::{path::PathBuf, sync::mpsc, time::Duration};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tokio_util::sync::CancellationToken;
 
+fn open_external(url: &str) -> std::io::Result<()> {
+    open::that_detached(url)
+}
+
 fn frontend_directory(app: &tauri::App) -> Result<PathBuf, Box<dyn std::error::Error>> {
     if cfg!(debug_assertions) {
         Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../dist/client"))
@@ -40,13 +44,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .build();
                     match runtime {
                         Ok(runtime) => {
-                            if let Err(error) = runtime.block_on(multiplexity_backend::serve(
-                                data_dir,
-                                frontend_dir,
-                                0,
-                                ready,
-                                worker_shutdown,
-                            )) {
+                            if let Err(error) =
+                                runtime.block_on(multiplexity_backend::serve_with_external_open(
+                                    data_dir,
+                                    frontend_dir,
+                                    0,
+                                    ready,
+                                    worker_shutdown,
+                                    Some(open_external),
+                                ))
+                            {
                                 eprintln!("Backend stopped: {error}");
                             }
                         }

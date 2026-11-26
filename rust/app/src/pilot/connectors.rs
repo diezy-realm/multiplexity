@@ -17,6 +17,7 @@ fn sanitize_connector(row: &Value) -> Value {
         "insecureTls": row["insecure_tls"].as_i64().unwrap_or(0) != 0,
         "enabled": row["enabled"].as_i64().unwrap_or(1) != 0,
         "hasToken": !row["token_encrypted"].as_str().unwrap_or("").is_empty(),
+        "hasCa": !row["ghes_ca_pem"].as_str().unwrap_or("").is_empty(),
         "lastStatus": row["last_status"],
         "lastVersion": row["last_version"],
         "lastCheckedAt": row["last_checked_at"],
@@ -57,7 +58,11 @@ pub async fn save_connector(
     ) {
         return Err(AppError::bad_request("Jenis konektor tidak didukung."));
     }
-    let label = body.get("label").and_then(Value::as_str).unwrap_or("").trim();
+    let label = body
+        .get("label")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     let base_url = body
         .get("baseUrl")
         .and_then(Value::as_str)
@@ -72,10 +77,40 @@ pub async fn save_connector(
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err(AppError::bad_request("Base URL harus http atau https."));
     }
-    let auth_type = body.get("authType").and_then(Value::as_str).unwrap_or("bearer");
-    let token = body.get("token").and_then(Value::as_str).unwrap_or("").trim();
-    let insecure = i64::from(body.get("insecureTls").and_then(Value::as_bool).unwrap_or(false));
+    let auth_type = body
+        .get("authType")
+        .and_then(Value::as_str)
+        .unwrap_or("bearer");
+    let token = body
+        .get("token")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
+    let insecure = i64::from(
+        body.get("insecureTls")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+    );
     let id = body.get("id").and_then(Value::as_str).unwrap_or("").trim();
+    let ghes = kind == "ghes";
+    let bitbucket = kind == "bitbucket";
+    let scm = ghes || bitbucket;
+    let ca = body.get("caPem").and_then(Value::as_str).map(str::trim);
+    if scm {
+        if ghes {
+            crate::scm::base_url(base_url)?;
+        } else {
+            crate::scm::bitbucket_base_url(base_url)?;
+        }
+        if auth_type != "bearer" || insecure != 0 {
+            return Err(AppError::bad_request(
+                "Koneksi SCM memerlukan token Bearer dan TLS terverifikasi.",
+            ));
+        }
+        if let Some(pem) = ca {
+            crate::scm::tls_client(pem)?;
+        }
+    }
 
     let connector_id = if id.is_empty() {
         if token.is_empty() {
@@ -83,8 +118,10 @@ pub async fn save_connector(
         }
         let enc = state.db.encrypt(token)?;
         let new_id = Uuid::new_v4().to_string();
-        state.db.execute(
-            "INSERT INTO pilot_connectors(id,user_id,kind,label,base_url,auth_type,token_encrypted,token_iv,token_auth_tag,insecure_tls) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        let inserted = state.db.execute(
+            "INSERT INTO pilot_connectors(id,user_id,kind,label,base_url,auth_type,token_encrypted,token_iv,token_auth_tag,insecure_tls,ghes_ca_pem)
+             SELECT ?,?,?,?,?,?,?,?,?,?,? WHERE ? != 'ghes' OR NOT EXISTS
+             (SELECT 1 FROM pilot_connectors WHERE user_id=? AND kind='ghes' AND enabled=1)",
             &[
                 json!(new_id),
                 json!(user.id),
@@ -96,8 +133,16 @@ pub async fn save_connector(
                 json!(enc.iv),
                 json!(enc.auth_tag),
                 json!(insecure),
+                json!(ca.filter(|_| scm).unwrap_or("")),
+                json!(kind),
+                json!(user.id),
             ],
         )?;
+        if inserted == 0 {
+            return Err(AppError::bad_request(
+                "Profil GitHub Enterprise aktif sudah tersedia. Edit atau nonaktifkan profil tersebut.",
+            ));
+        }
         new_id
     } else {
         let existing = state
@@ -107,9 +152,29 @@ pub async fn save_connector(
                 &[json!(id), json!(user.id)],
             )?
             .ok_or_else(|| AppError::not_found("Konektor tidak ditemukan."))?;
+        if (scm || existing["kind"] == "ghes" || existing["kind"] == "bitbucket")
+            && existing["kind"] != kind
+        {
+            return Err(AppError::bad_request(
+                "Jenis profil SCM tidak dapat diubah.",
+            ));
+        }
+        if scm && existing["base_url"] != base_url && token.is_empty() {
+            return Err(AppError::bad_request(
+                "Masukkan token baru saat base URL SCM berubah.",
+            ));
+        }
+        let ca = if scm {
+            ca.unwrap_or_else(|| existing["ghes_ca_pem"].as_str().unwrap_or(""))
+        } else {
+            ""
+        };
         let (ct, iv, tag) = if token.is_empty() {
             (
-                existing["token_encrypted"].as_str().unwrap_or("").to_owned(),
+                existing["token_encrypted"]
+                    .as_str()
+                    .unwrap_or("")
+                    .to_owned(),
                 existing["token_iv"].as_str().unwrap_or("").to_owned(),
                 existing["token_auth_tag"].as_str().unwrap_or("").to_owned(),
             )
@@ -118,7 +183,11 @@ pub async fn save_connector(
             (enc.ciphertext, enc.iv, enc.auth_tag)
         };
         state.db.execute(
-            "UPDATE pilot_connectors SET kind=?,label=?,base_url=?,auth_type=?,token_encrypted=?,token_iv=?,token_auth_tag=?,insecure_tls=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
+            "UPDATE pilot_connectors SET kind=?,label=?,base_url=?,auth_type=?,token_encrypted=?,token_iv=?,token_auth_tag=?,insecure_tls=?,ghes_ca_pem=?,
+             last_status=CASE WHEN kind IN ('ghes','bitbucket') THEN 'untested' ELSE last_status END,
+             last_version=CASE WHEN kind IN ('ghes','bitbucket') THEN '' ELSE last_version END,
+             last_checked_at=CASE WHEN kind IN ('ghes','bitbucket') THEN NULL ELSE last_checked_at END,
+             updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
             &[
                 json!(kind),
                 json!(label),
@@ -128,6 +197,7 @@ pub async fn save_connector(
                 json!(iv),
                 json!(tag),
                 json!(insecure),
+                json!(ca),
                 json!(id),
                 json!(user.id),
             ],
@@ -155,10 +225,24 @@ pub async fn toggle_connector(
         .and_then(Value::as_bool)
         .ok_or_else(|| AppError::bad_request("Status enabled wajib diisi."))?;
     let updated = state.db.execute(
-        "UPDATE pilot_connectors SET enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
-        &[json!(i64::from(enabled)), json!(id), json!(user.id)],
+        "UPDATE pilot_connectors SET enabled=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=? AND
+         (?=0 OR kind!='ghes' OR NOT EXISTS
+          (SELECT 1 FROM pilot_connectors other WHERE other.user_id=? AND other.id!=? AND other.kind='ghes' AND other.enabled=1))",
+        &[json!(i64::from(enabled)), json!(id), json!(user.id), json!(i64::from(enabled)), json!(user.id), json!(id)],
     )?;
     if updated == 0 {
+        if state
+            .db
+            .one(
+                "SELECT id FROM pilot_connectors WHERE id=? AND user_id=?",
+                &[json!(id), json!(user.id)],
+            )?
+            .is_some()
+        {
+            return Err(AppError::bad_request(
+                "Nonaktifkan profil GitHub Enterprise yang lain terlebih dahulu.",
+            ));
+        }
         return Err(AppError::not_found("Konektor tidak ditemukan."));
     }
     let row = state
@@ -201,6 +285,26 @@ pub async fn test_connector(
     if row["enabled"].as_i64().unwrap_or(1) == 0 {
         return Err(AppError::bad_request("Konektor sedang dinonaktifkan."));
     }
+    if row["kind"] == "ghes" || row["kind"] == "bitbucket" {
+        let result = if row["kind"] == "ghes" {
+            crate::scm::probe(&state, &row).await
+        } else {
+            crate::scm::probe_bitbucket(&state, &row).await
+        };
+        let (status, version, message) = match result {
+            Ok(version) => ("ok", version, "Versi API dan identitas token terverifikasi. Izin repository diperiksa saat PR dibuka.".to_owned()),
+            Err(error) => (if error.status == axum::http::StatusCode::FORBIDDEN { "denied" } else { "error" }, String::new(), error.message),
+        };
+        state.db.execute(
+            "UPDATE pilot_connectors SET last_status=?,last_version=?,last_checked_at=CURRENT_TIMESTAMP
+             WHERE id=? AND user_id=? AND base_url=? AND token_encrypted=? AND ghes_ca_pem=?",
+            &[json!(status), json!(version), json!(id), json!(user.id), row["base_url"].clone(),
+              row["token_encrypted"].clone(), row["ghes_ca_pem"].clone()],
+        )?;
+        return Ok(Json(
+            json!({"status":status,"version":version,"message":message}),
+        ));
+    }
     let token = state.db.decrypt(
         row["token_encrypted"].as_str().unwrap_or(""),
         row["token_iv"].as_str().unwrap_or(""),
@@ -213,8 +317,6 @@ pub async fn test_connector(
         "bamboo" => "/rest/api/latest/server",
         "sonarqube" => "/api/system/status",
         "jira" => "/rest/api/2/serverInfo",
-        "bitbucket" => "/rest/api/latest/application-properties",
-        "ghes" => "/api/v3/meta",
         "checkmarx" => "/api/scans?limit=1",
         "confluent" => "/topics",
         _ => return Err(AppError::bad_request("Konektor tidak dikenal.")),
@@ -240,7 +342,11 @@ pub async fn test_connector(
                     .unwrap_or("")
                     .to_owned()
             };
-            ("ok".to_owned(), ver, "Koneksi read-only berhasil.".to_owned())
+            (
+                "ok".to_owned(),
+                ver,
+                "Koneksi read-only berhasil.".to_owned(),
+            )
         }
         Ok(r) if r.status().as_u16() == 401 || r.status().as_u16() == 403 => (
             "denied".to_owned(),
@@ -316,9 +422,7 @@ pub fn format_bamboo_summary(parsed: &Value, run_key: &str) -> (String, Value) {
 }
 
 pub fn format_sonarqube_summary(parsed: &Value, project_key: &str) -> (String, Value) {
-    let status = parsed["projectStatus"]["status"]
-        .as_str()
-        .unwrap_or("NONE");
+    let status = parsed["projectStatus"]["status"].as_str().unwrap_or("NONE");
     let mut failed_conditions = Vec::new();
     if let Some(conds) = parsed["projectStatus"]["conditions"].as_array() {
         for cond in conds {
@@ -409,7 +513,9 @@ pub async fn fetch_ci_run(
                     "Format target Bitbucket harus PROJECT/repo.",
                 ));
             }
-            format!("{base}/rest/api/latest/projects/{proj}/repos/{slug}/pull-requests?state=OPEN&limit=10")
+            format!(
+                "{base}/rest/api/latest/projects/{proj}/repos/{slug}/pull-requests?state=OPEN&limit=10"
+            )
         }
         "ghes" => {
             let mut parts = key.split('/');
@@ -424,7 +530,11 @@ pub async fn fetch_ci_run(
         }
         "checkmarx" => format!("{base}/api/results?scan-id={key}&limit=25"),
         "confluent" => format!("{base}/topics/{key}"),
-        _ => return Err(AppError::bad_request("Konektor tidak mendukung pengambilan evidence.")),
+        _ => {
+            return Err(AppError::bad_request(
+                "Konektor tidak mendukung pengambilan evidence.",
+            ));
+        }
     };
     let resp = client
         .get(&url)
@@ -433,7 +543,9 @@ pub async fn fetch_ci_run(
         .await
         .map_err(|_| AppError::bad_request("Gagal menghubungi instance enterprise."))?;
     if resp.status().as_u16() == 401 || resp.status().as_u16() == 403 {
-        return Err(AppError::forbidden("Izin baca ditolak oleh instance enterprise."));
+        return Err(AppError::forbidden(
+            "Izin baca ditolak oleh instance enterprise.",
+        ));
     }
     if !resp.status().is_success() {
         return Err(AppError::bad_request(format!(
@@ -468,7 +580,9 @@ pub async fn fetch_ci_run(
             json!(meta.to_string()),
         ],
     )?;
-    Ok(Json(json!({ "itemId": item_id, "sourceUrl": url, "metadata": meta })))
+    Ok(Json(
+        json!({ "itemId": item_id, "sourceUrl": url, "metadata": meta }),
+    ))
 }
 
 pub async fn confluent_metadata(
@@ -542,7 +656,11 @@ pub async fn save_jira_draft(
     if summary.is_empty() {
         return Err(AppError::bad_request("Ringkasan draft Jira wajib diisi."));
     }
-    let project_key = body.get("projectKey").and_then(Value::as_str).unwrap_or("").trim();
+    let project_key = body
+        .get("projectKey")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim();
     let draft_body = body.get("body").and_then(Value::as_str).unwrap_or("");
     let ac = body
         .get("acceptanceCriteria")
@@ -652,7 +770,10 @@ pub async fn submit_jira_draft(
             "issuetype": { "name": "Task" }
         }
     });
-    let url = format!("{}/rest/api/2/issue", conn["base_url"].as_str().unwrap_or(""));
+    let url = format!(
+        "{}/rest/api/2/issue",
+        conn["base_url"].as_str().unwrap_or("")
+    );
     let client = http_client(conn["insecure_tls"].as_i64().unwrap_or(0) != 0)?;
     let resp = client
         .post(&url)
@@ -667,7 +788,9 @@ pub async fn submit_jira_draft(
             "UPDATE jira_drafts SET status='failed',updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
             &[json!(draft_id), json!(user.id)],
         )?;
-        return Err(AppError::bad_request(format!("Submit Jira gagal (HTTP {status}).")));
+        return Err(AppError::bad_request(format!(
+            "Submit Jira gagal (HTTP {status})."
+        )));
     }
     let resp_json: Value = resp.json().await.unwrap_or_else(|_| json!({}));
     let issue_key = resp_json["key"].as_str().unwrap_or("").to_owned();
@@ -675,5 +798,7 @@ pub async fn submit_jira_draft(
         "UPDATE jira_drafts SET issue_key=?,status='submitted',updated_at=CURRENT_TIMESTAMP WHERE id=? AND user_id=?",
         &[json!(issue_key), json!(draft_id), json!(user.id)],
     )?;
-    Ok(Json(json!({ "issueKey": issue_key, "deduplicated": false })))
+    Ok(Json(
+        json!({ "issueKey": issue_key, "deduplicated": false }),
+    ))
 }

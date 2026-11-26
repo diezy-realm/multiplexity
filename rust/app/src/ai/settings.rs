@@ -1,9 +1,10 @@
 use crate::{AppError, AppState};
 use axum::Json;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
-pub const PROVIDERS: [&str; 8] = [
+pub const PROVIDERS: [&str; 11] = [
     "openai",
     "claude",
     "gemini",
@@ -12,6 +13,9 @@ pub const PROVIDERS: [&str; 8] = [
     "codex",
     "kiro",
     "antigravity",
+    "openrouter",
+    "groq",
+    "grok",
 ];
 
 pub fn text<'a>(value: &'a Value, field: &str) -> &'a str {
@@ -20,6 +24,57 @@ pub fn text<'a>(value: &'a Value, field: &str) -> &'a str {
 
 pub fn is_cli(provider: &str) -> bool {
     matches!(provider, "codex" | "kiro" | "antigravity")
+}
+
+pub fn needs_key(provider: &str) -> bool {
+    !is_cli(provider) && !matches!(provider, "ollama" | "custom")
+}
+
+fn default_endpoint(provider: &str) -> &'static str {
+    match provider {
+        "openai" => "https://api.openai.com/v1",
+        "claude" => "https://api.anthropic.com/v1",
+        "gemini" => "https://generativelanguage.googleapis.com/v1beta/openai",
+        "ollama" => "http://127.0.0.1:11434/v1",
+        "openrouter" => "https://openrouter.ai/api/v1",
+        "groq" => "https://api.groq.com/openai/v1",
+        "grok" => "https://api.x.ai/v1",
+        _ => "",
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Model {
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Profile {
+    pub label: String,
+    pub description: String,
+    pub color: String,
+    pub enabled: bool,
+    pub verified: bool,
+    pub version: String,
+    pub models: Vec<Model>,
+    pub disabled_models: Vec<String>,
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            label: String::new(),
+            description: String::new(),
+            color: String::new(),
+            enabled: true,
+            verified: false,
+            version: String::new(),
+            models: Vec::new(),
+            disabled_models: Vec::new(),
+        }
+    }
 }
 
 pub fn valid_model(value: &str) -> bool {
@@ -36,6 +91,24 @@ pub struct Connection {
     pub cli_path: String,
     pub endpoint: String,
     pub saved: bool,
+    pub profile: Profile,
+}
+
+impl Connection {
+    pub fn check_enabled(&self, model: &str) -> Result<(), AppError> {
+        if !self.profile.enabled {
+            return Err(AppError::bad_request(
+                "Provider dinonaktifkan di AI Provider.",
+            ));
+        }
+        if model.is_empty() && !self.profile.disabled_models.is_empty() {
+            return Err(AppError::bad_request("Pilih model aktif di AI Provider."));
+        }
+        if self.profile.disabled_models.iter().any(|id| id == model) {
+            return Err(AppError::bad_request("Model dinonaktifkan di AI Provider."));
+        }
+        Ok(())
+    }
 }
 
 pub fn connection(state: &AppState, provider: &str) -> Result<Connection, AppError> {
@@ -56,12 +129,12 @@ pub fn connection(state: &AppState, provider: &str) -> Result<Connection, AppErr
             text(value, "api_key_auth_tag"),
         )?
     };
-    let endpoint = match (text(value, "endpoint"), provider) {
-        ("", "gemini") => "https://generativelanguage.googleapis.com/v1beta/openai",
-        ("", "ollama") => "http://127.0.0.1:11434/v1",
-        (other, _) => other,
-    }
-    .to_owned();
+    let endpoint = text(value, "endpoint");
+    let endpoint = if !matches!(provider, "gemini" | "ollama" | "custom") || endpoint.is_empty() {
+        default_endpoint(provider)
+    } else {
+        endpoint
+    };
     Ok(Connection {
         provider: provider.to_owned(),
         model: row
@@ -75,8 +148,9 @@ pub fn connection(state: &AppState, provider: &str) -> Result<Connection, AppErr
             .to_owned(),
         key,
         cli_path: text(value, "cli_path").to_owned(),
-        endpoint,
+        endpoint: endpoint.to_owned(),
         saved: row.is_some(),
+        profile: serde_json::from_str(text(value, "profile_json")).unwrap_or_default(),
     })
 }
 
@@ -88,25 +162,39 @@ pub fn active(state: &AppState) -> Result<String, AppError> {
         .as_ref()
         .map(|v| text(v, "provider"))
         .unwrap_or("openai");
-    Ok(if PROVIDERS.contains(&provider) {
-        provider
-    } else {
-        "openai"
+    if PROVIDERS.contains(&provider) && connection(state, provider)?.profile.enabled {
+        return Ok(provider.to_owned());
     }
-    .to_owned())
+    let rows = state.db.query(
+        "SELECT provider FROM ai_connections WHERE COALESCE(json_extract(profile_json,'$.enabled'),1)=1 ORDER BY updated_at DESC,provider",
+        &[],
+    )?;
+    Ok(rows
+        .iter()
+        .map(|row| text(row, "provider"))
+        .find(|id| PROVIDERS.contains(id))
+        .unwrap_or("openai")
+        .to_owned())
 }
 
 pub async fn public(state: &AppState) -> Result<Value, AppError> {
-    let mut items = Vec::new();
-    for provider in PROVIDERS {
-        let item = connection(state, provider)?;
-        let executable = if is_cli(provider) {
-            find_cli(provider, &item.cli_path).await
+    let records = PROVIDERS
+        .into_iter()
+        .map(|provider| connection(state, provider))
+        .collect::<Result<Vec<_>, _>>()?;
+    let executables = futures_util::future::join_all(records.iter().map(|item| async {
+        if is_cli(&item.provider) {
+            find_cli(&item.provider, &item.cli_path).await
         } else {
             None
-        };
+        }
+    }))
+    .await;
+    let mut items = Vec::new();
+    for (item, executable) in records.into_iter().zip(executables) {
+        let provider = item.provider.as_str();
         let configured = !item.key.is_empty()
-            || executable.is_some()
+            || (is_cli(provider) && item.saved && executable.is_some())
             || (provider == "ollama" && item.saved)
             || (provider == "custom" && !item.endpoint.is_empty());
         let hint = if item.key.is_empty() {
@@ -124,7 +212,7 @@ pub async fn public(state: &AppState) -> Result<Value, AppError> {
                     .collect::<String>()
             )
         };
-        items.push(json!({"provider":provider,"model":item.model,"configured":configured,"apiKeyHint":hint,"cliPath":item.cli_path,"endpoint":item.endpoint,"available":!is_cli(provider)||executable.is_some(),"executable":executable.map(|p|p.to_string_lossy().into_owned()).unwrap_or_default()}));
+        items.push(json!({"provider":provider,"model":item.model,"saved":item.saved,"configured":configured,"profile":item.profile,"apiKeyHint":hint,"cliPath":item.cli_path,"endpoint":item.endpoint,"available":!is_cli(provider)||executable.is_some(),"executable":executable.map(|p|p.to_string_lossy().into_owned()).unwrap_or_default()}));
     }
     let selected = active(state)?;
     let mut result = items
@@ -164,12 +252,16 @@ pub fn validate_endpoint(endpoint: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-pub async fn save(state: &AppState, body: Value) -> Result<Json<Value>, AppError> {
-    let provider = text(&body, "provider");
+pub async fn draft(state: &AppState, body: &Value) -> Result<Connection, AppError> {
+    let provider = text(body, "provider");
+    let mut previous = connection(state, provider)?;
+    if body.get("model").is_some_and(|model| !model.is_string()) {
+        return Err(AppError::bad_request("Model tidak valid."));
+    }
     let model = body
         .get("model")
         .and_then(Value::as_str)
-        .ok_or_else(|| AppError::bad_request("Model tidak valid."))?;
+        .unwrap_or(&previous.model);
     if !PROVIDERS.contains(&provider) || !valid_model(model) {
         return Err(AppError::bad_request("Konfigurasi tidak valid."));
     }
@@ -184,28 +276,35 @@ pub async fn save(state: &AppState, body: Value) -> Result<Json<Value>, AppError
     if body.get("clearKey").is_some_and(|v| !v.is_boolean()) {
         return Err(AppError::bad_request("Konfigurasi tidak valid."));
     }
-    let previous = connection(state, provider)?;
-    let key = text(&body, "apiKey").trim();
+    let key = text(body, "apiKey").trim();
     if provider == "codex" && !key.is_empty() {
         return Err(AppError::bad_request("Gunakan login resmi Codex CLI."));
     }
     if (!key.is_empty() && key.len() < 10)
-        || (!is_cli(provider)
-            && !matches!(provider, "ollama" | "custom")
+        || (needs_key(provider)
             && body["clearKey"] != true
             && key.is_empty()
             && previous.key.is_empty())
     {
         return Err(AppError::bad_request("API key wajib diisi."));
     }
-    let endpoint = text(&body, "endpoint").trim();
+    let endpoint = body
+        .get("endpoint")
+        .and_then(Value::as_str)
+        .unwrap_or(&previous.endpoint)
+        .trim();
     if !endpoint.is_empty() {
         validate_endpoint(endpoint)?;
     }
     if provider == "custom" && endpoint.is_empty() {
         return Err(AppError::bad_request("Endpoint API wajib diisi."));
     }
-    let mut cli_path = text(&body, "cliPath").trim().to_owned();
+    let mut cli_path = body
+        .get("cliPath")
+        .and_then(Value::as_str)
+        .unwrap_or(&previous.cli_path)
+        .trim()
+        .to_owned();
     if is_cli(provider) && !cli_path.is_empty() {
         cli_path = find_cli(provider, &cli_path)
             .await
@@ -213,15 +312,118 @@ pub async fn save(state: &AppState, body: Value) -> Result<Json<Value>, AppError
             .to_string_lossy()
             .into_owned();
     }
-    let secret = state.db.encrypt(if !key.is_empty() {
-        key
+    let key = if !key.is_empty() {
+        key.to_owned()
     } else if body["clearKey"] == true {
-        ""
+        String::new()
     } else {
-        &previous.key
+        previous.key.clone()
+    };
+    let endpoint = if !matches!(provider, "gemini" | "ollama" | "custom") || endpoint.is_empty() {
+        default_endpoint(provider).to_owned()
+    } else {
+        endpoint.trim_end_matches('/').to_owned()
+    };
+    let origin = |value: &str| reqwest::Url::parse(value).ok().map(|url| url.origin());
+    if body["clearKey"] != true
+        && text(body, "apiKey").trim().is_empty()
+        && !previous.key.is_empty()
+        && origin(&endpoint) != origin(&previous.endpoint)
+    {
+        return Err(AppError::bad_request(
+            "Isi API key untuk endpoint baru atau hapus key tersimpan.",
+        ));
+    }
+    if key != previous.key || endpoint != previous.endpoint || cli_path != previous.cli_path {
+        previous.profile.verified = false;
+        previous.profile.version.clear();
+    }
+    previous.model = model.to_owned();
+    previous.key = key;
+    previous.endpoint = endpoint;
+    previous.cli_path = cli_path;
+    Ok(previous)
+}
+
+pub async fn save(state: &AppState, body: Value) -> Result<Json<Value>, AppError> {
+    let mut connection = draft(state, &body).await?;
+    let profile = &mut connection.profile;
+    if let Some(identity) = body.get("profile") {
+        let invalid = || AppError::bad_request("Identitas atau daftar model tidak valid.");
+        let label = text(identity, "label").trim();
+        let description = text(identity, "description").trim();
+        let color = text(identity, "color");
+        if label.is_empty()
+            || label.chars().count() > 64
+            || description.chars().count() > 280
+            || label.chars().any(char::is_control)
+            || description.contains('\0')
+            || (!color.is_empty()
+                && !(color.len() == 7
+                    && color.starts_with('#')
+                    && color.bytes().skip(1).all(|byte| byte.is_ascii_hexdigit())))
+        {
+            return Err(invalid());
+        }
+        let models: Vec<Model> =
+            serde_json::from_value(identity["models"].clone()).map_err(|_| invalid())?;
+        let disabled: Vec<String> =
+            serde_json::from_value(identity["disabledModels"].clone()).map_err(|_| invalid())?;
+        if models.len() > 300
+            || disabled.len() > 300
+            || models.iter().any(|model| {
+                model.id.is_empty() || !valid_model(&model.id) || model.name.chars().count() > 160
+            })
+            || disabled
+                .iter()
+                .any(|id| id.is_empty() || !valid_model(id) || id == &connection.model)
+        {
+            return Err(invalid());
+        }
+        profile.label = label.to_owned();
+        profile.description = description.to_owned();
+        profile.color = color.to_owned();
+        profile.models = models;
+        profile.disabled_models = disabled;
+    }
+    if body["verify"] == true {
+        let result = super::probe_connection(&connection).await?;
+        connection.profile.verified = true;
+        connection.profile.version = result.version;
+    }
+    let secret = state.db.encrypt(&connection.key)?;
+    let make_default = body["makeDefault"].as_bool().unwrap_or(true);
+    if make_default {
+        connection.check_enabled(&connection.model)?;
+    }
+    let serialized = serde_json::to_string(&connection.profile)
+        .map_err(|_| AppError::internal("Profil provider tidak dapat disimpan."))?;
+    state.db.with_connection(|db| {
+        let failed = |_| AppError::internal("Profil provider tidak dapat disimpan.");
+        let transaction = db.transaction().map_err(failed)?;
+        transaction.execute(
+            "INSERT INTO ai_connections(provider,model,api_key_encrypted,api_key_iv,api_key_auth_tag,cli_path,endpoint,profile_json)
+             VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(provider) DO UPDATE SET
+             model=excluded.model,api_key_encrypted=excluded.api_key_encrypted,api_key_iv=excluded.api_key_iv,
+             api_key_auth_tag=excluded.api_key_auth_tag,cli_path=excluded.cli_path,endpoint=excluded.endpoint,
+             profile_json=json_set(excluded.profile_json,'$.enabled',json(CASE WHEN json_extract(ai_connections.profile_json,'$.enabled')=0 THEN 'false' ELSE 'true' END)),updated_at=CURRENT_TIMESTAMP",
+            rusqlite::params![connection.provider,connection.model,secret.ciphertext,secret.iv,secret.auth_tag,connection.cli_path,connection.endpoint,serialized],
+        ).map_err(failed)?;
+        if make_default {
+            let enabled: bool = transaction.query_row(
+                "SELECT COALESCE(json_extract(profile_json,'$.enabled'),1) FROM ai_connections WHERE provider=?",
+                [&connection.provider], |row| row.get(0),
+            ).map_err(failed)?;
+            if !enabled {
+                return Err(AppError::bad_request("Aktifkan provider sebelum menjadikannya default."));
+            }
+            transaction.execute(
+                "INSERT INTO ai_settings(id,provider,model) VALUES('default',?,?) ON CONFLICT(id) DO UPDATE SET provider=excluded.provider,model=excluded.model",
+                rusqlite::params![connection.provider,connection.model],
+            ).map_err(failed)?;
+        }
+        transaction.commit().map_err(failed)
     })?;
-    state.db.execute("INSERT INTO ai_connections(provider,model,api_key_encrypted,api_key_iv,api_key_auth_tag,cli_path,endpoint) VALUES(?,?,?,?,?,?,?) ON CONFLICT(provider) DO UPDATE SET model=excluded.model,api_key_encrypted=excluded.api_key_encrypted,api_key_iv=excluded.api_key_iv,api_key_auth_tag=excluded.api_key_auth_tag,cli_path=excluded.cli_path,endpoint=excluded.endpoint,updated_at=CURRENT_TIMESTAMP",&[json!(provider),json!(model),json!(secret.ciphertext),json!(secret.iv),json!(secret.auth_tag),json!(cli_path),json!(endpoint)])?;
-    state.db.execute("INSERT INTO ai_settings(id,provider,model) VALUES('default',?,?) ON CONFLICT(id) DO UPDATE SET provider=excluded.provider,model=excluded.model",&[json!(provider),json!(model)])?;
     Ok(Json(json!({"success":true})))
 }
 
@@ -239,6 +441,7 @@ pub async fn find_cli(provider: &str, configured: &str) -> Option<PathBuf> {
     };
     let native = |candidate: &PathBuf| {
         candidate.is_absolute()
+            && !candidate.to_string_lossy().starts_with(r"\\")
             && candidate
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&expected))
@@ -246,7 +449,10 @@ pub async fn find_cli(provider: &str, configured: &str) -> Option<PathBuf> {
     };
     if !configured.is_empty() {
         let mut candidate = PathBuf::from(configured.trim_matches('"'));
-        if !candidate.is_absolute() || configured.contains(['\0', '\r', '\n']) {
+        if !candidate.is_absolute()
+            || candidate.to_string_lossy().starts_with(r"\\")
+            || configured.contains(['\0', '\r', '\n'])
+        {
             return None;
         }
         if candidate.is_dir() {
@@ -255,13 +461,7 @@ pub async fn find_cli(provider: &str, configured: &str) -> Option<PathBuf> {
         if native(&candidate) {
             return Some(candidate);
         }
-        if candidate.extension().is_some_and(|e| e == "exe")
-            && !candidate
-                .file_name()
-                .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&expected))
-        {
-            return None;
-        }
+        return None;
     }
     let mut folders = Vec::new();
     if cfg!(windows) {

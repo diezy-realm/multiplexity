@@ -11,8 +11,9 @@ beforeEach(()=>{
   bodies=[];window.history.replaceState({},'','/chat');Element.prototype.scrollIntoView=vi.fn();
   vi.stubGlobal('fetch',vi.fn(async(url:string,options?:RequestInit)=>{
     if(url==='/api/ai/chat'&&options?.method==='POST'){bodies.push(JSON.parse(String(options.body)));return new Response(JSON.stringify({message:'Fixture answer'}),{headers:{'Content-Type':'application/json'}});}
-    return new Response(JSON.stringify(url==='/api/ai/settings'?{provider:'codex',model:'fixture',connections:[]}:
+    return new Response(JSON.stringify(url==='/api/ai/settings'?{provider:'codex',model:'fixture',connections:['codex','openai','kiro'].map(provider=>({provider,model:provider==='codex'?'fixture':'',configured:true,cliPath:'',apiKeyHint:''}))}:
       url==='/api/vms'?[{id:source.vmId,label:'Fixture VM'}]:url.includes('/services')?{services:[{id:'fixture',name:source.target,type:'systemd'}]}:
+      url==='/api/library/skills'?{skills:[{id:'diagnose',enabled:true},{id:'summarize',enabled:true},{id:'explain',enabled:false}]}:
       url==='/api/artifacts'?{files:[]}: {messages:[]}));
   }));
 });

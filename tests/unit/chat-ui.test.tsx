@@ -10,7 +10,9 @@ beforeEach(()=>{
  vi.stubGlobal('React',React);
  Element.prototype.scrollIntoView=vi.fn();
  Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:vi.fn().mockResolvedValue(undefined)}});
- vi.stubGlobal('fetch',vi.fn(async(url:string)=>({ok:true,json:async()=>url==='/api/ai/settings'?{connections:[],provider:'codex',model:''}:url==='/api/ai/chat'?{messages:[]}:url==='/api/artifacts'?{files:[]}:[]})));
+ vi.stubGlobal('fetch',vi.fn(async(url:string)=>({ok:true,json:async()=>url==='/api/ai/settings'?{
+  connections:[{provider:'codex',model:'',configured:true,cliPath:'',apiKeyHint:''}],provider:'codex',
+ }:url==='/api/ai/chat'?{messages:[]}:url==='/api/artifacts'?{files:[]}:[]})));
 });
 afterEach(()=>{cleanup();vi.unstubAllGlobals();});
 it('copies fenced code without Markdown and offers response copy',async()=>{

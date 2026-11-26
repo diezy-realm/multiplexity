@@ -1,4 +1,5 @@
 'use client';
+import { useSearchParams } from 'react-router-dom';
 import { PageActions } from '@/components/PageHeader';
 
 
@@ -476,7 +477,9 @@ export default function DashboardPage() {
   const [vms, setVms] = useState<VMWithStatus[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [params] = useSearchParams();
+  const connectFromLibrary = params.get('connect') === '1';
+  const [isModalOpen, setIsModalOpen] = useState(connectFromLibrary);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>([]);
   const [activeTerminalTabId, setActiveTerminalTabId] = useState<string | null>(null);
@@ -742,6 +745,7 @@ export default function DashboardPage() {
       const res = await fetch(`/api/vms/${deleteVm.id}`, { method: 'DELETE' });
       if (res.ok) {
         setDeleteVm(null);
+      window.dispatchEvent(new Event("library-apps-changed"));
         // Remove terminal tabs for this VM
         setTerminalTabs(prev => prev.filter(tab => tab.vmId !== deleteVm.id));
         await fetchVMs();
@@ -800,6 +804,7 @@ export default function DashboardPage() {
       }
 
       setIsModalOpen(false);
+      window.dispatchEvent(new Event("library-apps-changed"));
       await fetchVMs();
     } finally {
       setIsSubmitting(false);

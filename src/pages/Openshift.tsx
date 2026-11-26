@@ -1,5 +1,6 @@
 'use client';
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
   ArrowUpRight,
   CheckCircle2,
@@ -141,7 +142,10 @@ export default function OpenshiftPage() {
   const [password, setPassword] = useState('');
   const [hasToken, setHasToken] = useState(false);
   const [insecureTls, setInsecureTls] = useState(true);
-  const [connectionOpen, setConnectionOpen] = useState(false);
+  const [params] = useSearchParams();
+  const connectFromLibrary = params.get('connect') === '1';
+  const connectOnInitialLoad = useRef(connectFromLibrary);
+  const [connectionOpen, setConnectionOpen] = useState(connectFromLibrary);
 
   const [projects, setProjects] = useState<string[]>([]);
   const [project, setProject] = useState('');
@@ -209,11 +213,12 @@ export default function OpenshiftPage() {
     setClusters(list);
     if (list.length > 0) {
       setActiveClusterId(prev => (prev && list.some(c => c.id === prev) ? prev : list[0].id));
-      setConnectionOpen(false);
+      setConnectionOpen(connectOnInitialLoad.current);
     } else {
       setActiveClusterId('');
       setConnectionOpen(true);
     }
+    connectOnInitialLoad.current = false;
     return list;
   }, []);
 
@@ -297,6 +302,7 @@ export default function OpenshiftPage() {
       setPassword('');
       setConnectionOpen(false);
       await loadClusters();
+      window.dispatchEvent(new Event("library-apps-changed"));
       if (data.cluster?.id) {
         setActiveClusterId(data.cluster.id);
       }
@@ -321,6 +327,7 @@ export default function OpenshiftPage() {
         if (!res.ok) throw new Error(data.error || 'Gagal menghapus cluster.');
         setSnackbar(`Cluster ${cluster.label} dihapus.`);
         await loadClusters();
+        window.dispatchEvent(new Event("library-apps-changed"));
       },
     });
   }

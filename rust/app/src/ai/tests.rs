@@ -14,6 +14,8 @@ fn state(directory: &std::path::Path) -> AppState {
         data_dir: directory.to_owned(),
         client: reqwest::Client::new(),
         origin: Arc::new(RwLock::new(String::new())),
+        external_open: None,
+        review_previews: Arc::default(),
     }
 }
 fn user() -> User {
@@ -39,7 +41,9 @@ async fn configure(state: &AppState, endpoint: &str) {
         .expect("fixture provider");
 }
 async fn fixture_server() -> (String, tokio::task::JoinHandle<()>) {
-    let app=Router::new().route("/v1/chat/completions",post(||async {
+    let app=Router::new().route("/v1/models", get(|| async {
+        Json(json!({"data":[{"id":"fixture","name":"Fixture"},{"id":"alternate","name":"Alternate"}]}))
+    })).route("/v1/chat/completions",post(||async {
         let events=async_stream::stream! {
             yield Ok::<Event,Infallible>(Event::default().data(json!({"choices":[{"delta":{"content":"Halo "},"finish_reason":null}]}).to_string()));
             tokio::time::sleep(Duration::from_millis(80)).await;
@@ -59,6 +63,124 @@ async fn fixture_server() -> (String, tokio::task::JoinHandle<()>) {
         axum::serve(listener, app).await.expect("fixture serve");
     });
     (endpoint, server)
+}
+
+#[tokio::test]
+async fn provider_probe_profile_and_disabled_models_follow_settings() {
+    let directory = tempfile::tempdir().expect("temporary workspace");
+    let state = state(directory.path());
+    let (endpoint, fixture) = fixture_server().await;
+    let app = app(state.clone());
+    let send = |method: &'static str, path: &'static str, body: Value| {
+        let app = app.clone();
+        async move {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .expect("provider request");
+            let response = app.oneshot(request).await.expect("provider response");
+            let status = response.status();
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes();
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).expect("provider JSON"),
+            )
+        }
+    };
+    let mut payload = json!({
+        "provider":"custom", "endpoint":endpoint, "model":"fixture", "apiKey":"synthetic-key-for-tests",
+        "verify":true,"profile":{"label":"Local fixture","description":"Fixture only","color":"#12aBcF","models":[{"id":"fixture","name":"Fixture"},{"id":"alternate","name":"Alternate"}],"disabledModels":["alternate"]}
+    });
+    let (status, result) = send("POST", "/api/ai/probe", payload.clone()).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["models"].as_array().expect("models").len(), 2);
+    assert!(!settings::connection(&state, "custom").expect("draft").saved);
+    assert_eq!(
+        send("POST", "/api/ai/settings", payload.clone()).await.0,
+        StatusCode::OK
+    );
+    let item = settings::connection(&state, "custom").expect("stored");
+    assert!(item.profile.verified);
+    assert_eq!(item.profile.label, "Local fixture");
+    let (_, response) = send("GET", "/api/ai/settings", Value::Null).await;
+    assert!(!response.to_string().contains("synthetic-key-for-tests"));
+    assert_eq!(response["profile"]["enabled"], true);
+
+    let mut unavailable = body();
+    unavailable["model"] = json!("alternate");
+    assert_eq!(
+        send("POST", "/api/ai/chat", unavailable).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let (status, list) = send("GET", "/api/ai/models?provider=custom", Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["models"].as_array().expect("active models").len(), 1);
+    assert_eq!(
+        send(
+            "PATCH",
+            "/api/ai/settings",
+            json!({"provider":"custom","enabled":false})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        send("POST", "/api/ai/chat", body()).await.0,
+        StatusCode::BAD_REQUEST
+    );
+
+    payload["verify"] = json!(false);
+    payload["makeDefault"] = json!(false);
+    payload["profile"]["label"] = json!("Renamed fixture");
+    assert_eq!(
+        send("POST", "/api/ai/settings", payload).await.0,
+        StatusCode::OK
+    );
+    let item = settings::connection(&state, "custom").expect("updated");
+    assert!(!item.profile.enabled);
+    assert!(item.profile.verified);
+    assert_eq!(item.profile.label, "Renamed fixture");
+    let switch_origin = json!({"provider":"custom","endpoint":"https://elsewhere.invalid/v1"});
+    assert_eq!(
+        send("POST", "/api/ai/probe", switch_origin).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        send(
+            "PATCH",
+            "/api/ai/settings",
+            json!({"provider":"custom","enabled":true})
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(
+        settings::connection(&state, "custom")
+            .expect("enabled")
+            .profile
+            .enabled
+    );
+
+    for (id, endpoint) in [
+        ("openrouter", "https://openrouter.ai/api/v1"),
+        ("groq", "https://api.groq.com/openai/v1"),
+        ("grok", "https://api.x.ai/v1"),
+    ] {
+        let added = settings::connection(&state, id).expect("provider");
+        assert_eq!(added.endpoint, endpoint);
+        assert!(settings::needs_key(id));
+        assert!(!settings::is_cli(id));
+    }
+    fixture.abort();
 }
 
 #[tokio::test]
@@ -308,6 +430,7 @@ async fn codex_permissions_and_image_cleanup_follow_the_requested_mode() {
         cli_path: String::new(),
         endpoint: String::new(),
         saved: true,
+        profile: Default::default(),
     };
     let image = json!({"name":"fixture.png","mediaType":"image/png","content":"iVBORw0KGgo="});
     for permission in ["read-only", "ask", "allow-all"] {

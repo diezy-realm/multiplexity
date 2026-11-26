@@ -1,69 +1,75 @@
 // @vitest-environment jsdom
-import React from 'react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import React from 'react';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import AISettingsModal from '@/components/AISettingsModal';
 
-const executable = 'C:\\Test\\Codex\\bin\\codex.exe';
-let operations: string[];
-let failSave: boolean;
-let stored: string;
-let desktop: boolean;
+const path = 'C:/Test/Codex/bin/codex.exe';
+const models = [{ id: 'fixture-model', name: 'Fixture model' }];
+const saved = vi.fn();
+let operations: { url: string; body: Record<string, unknown> }[];
+let failure: string;
+
 beforeEach(() => {
-  operations = []; failSave = false; stored = ''; desktop = true;
+  operations = [];
   vi.stubGlobal('React', React);
-  vi.stubGlobal('fetch', vi.fn(async (url: string, options?: RequestInit) => {
-    const response = (body: object, status = 200) => ({ ok: status === 200, status, json: async () => body });
-    if (url === '/api/ai/settings' && options?.method === 'POST') {
-      operations.push('save');
-      if (failSave) return response({ error: 'Path tidak valid' }, 400);
-      stored = executable;
-      return response({ success: true });
-    }
-    if (url === '/api/ai/settings') return response({ provider: 'codex', desktop, localCli: !desktop, connections: [{ provider: 'codex', model: '', cliPath: stored, executable: stored, configured: true, available: !!stored, apiKeyHint: '' }] });
-    if (url === '/api/ai/detect') return response({ available: true, executable });
-    if (url === '/api/ai/connect') { operations.push('connect'); return response({ message: 'Login CLI dibuka' }); }
-    if (url.startsWith('/api/ai/models')) { operations.push('models'); return response({ models: [{ id: 'synthetic-model', name: 'Synthetic model' }] }); }
-    throw new Error('Unexpected test request');
+  failure = '';
+  saved.mockReset();
+  Object.assign(HTMLDialogElement.prototype, {
+    showModal(this: HTMLDialogElement) { this.open = true; },
+    close(this: HTMLDialogElement) { this.open = false; this.dispatchEvent(new Event('close')); },
+  });
+  vi.stubGlobal('fetch', vi.fn(async (url: string, input?: RequestInit) => {
+    operations.push({ url, body: JSON.parse(String(input?.body)) });
+    return new Response(JSON.stringify(failure && url === '/api/ai/probe' ? { error: failure } :
+      url === '/api/ai/probe' ? { models, executable: path, version: 'codex 0.fixture' } :
+        url === '/api/ai/connect' ? { message: 'Login CLI dibuka' } : { success: true }), { status: failure && url === '/api/ai/probe' ? 400 : 200 });
   }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it('enables CLI discovery and Connect for the localhost web profile',async()=>{
-  desktop=false;render(<AISettingsModal isOpen onClose={()=>{}}/>);
-  await waitFor(()=>expect((screen.getByLabelText('CLI executable') as HTMLInputElement).value).toBe(executable));
-  expect((screen.getByText('Connect melalui CLI') as HTMLButtonElement).disabled).toBe(false);
+function open(provider: RegExp, detected = false) {
+  render(<AISettingsModal connections={detected ? [{ provider: 'codex', model: '', cliPath: '', executable: path, configured: false, apiKeyHint: '' }] : []}
+    makeDefault onClose={() => {}} onSaved={saved} />);
+  fireEvent.click(screen.getByRole('radio', { name: provider }));
+  fireEvent.click(screen.getByRole('button', { name: 'Lanjut' }));
+  fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Fixture label' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Lanjut' }));
+}
+
+it('automatically verifies a discovered CLI and saves only after the final action', async () => {
+  open(/Codex CLI/, true);
+  await screen.findByText(/Koneksi terverifikasi/);
+  expect(operations.map(item => item.url)).toEqual(['/api/ai/probe']);
+  fireEvent.click(screen.getByRole('button', { name: 'Tambah provider' }));
+  await waitFor(() => expect(saved).toHaveBeenCalledWith('codex'));
+  expect(operations[1]?.body).toMatchObject({ provider: 'codex', verify: true, profile: { label: 'Fixture label', models } });
 });
 
-it('fills the detected CLI executable automatically after opening settings', async () => {
-  render(<AISettingsModal isOpen onClose={() => {}} />);
-  await waitFor(() => expect((screen.getByLabelText('CLI executable') as HTMLInputElement).value).toBe(executable));
-  expect(screen.getByText('CLI ditemukan · login dikelola CLI')).toBeTruthy();
+it('requires a successful test for manual API configuration', async () => {
+  open(/Groq/);
+  const add = screen.getByRole<HTMLButtonElement>('button', { name: 'Tambah provider' });
+  expect(add.disabled).toBe(true);
+  expect(operations).toEqual([]);
+  fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'synthetic-key' } });
+  failure = 'API key ditolak';
+  fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+  await screen.findByRole('alert');
+  expect(add.disabled).toBe(true);
+  failure = '';
+  fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+  await screen.findByText(/Koneksi terverifikasi/);
+  fireEvent.change(screen.getByLabelText('Model default'), { target: { value: 'fixture-model' } });
+  fireEvent.click(add);
+  await waitFor(() => expect(saved).toHaveBeenCalledWith('groq'));
+  expect(operations.at(-1)?.body).toMatchObject({ provider: 'groq', model: 'fixture-model', endpoint: 'https://api.groq.com/openai/v1' });
 });
 
-it('saves a manual folder draft before Connect without requiring a separate Save click', async () => {
-  render(<AISettingsModal isOpen onClose={() => {}} />);
-  await waitFor(() => expect((screen.getByLabelText('CLI executable') as HTMLInputElement).value).toBe(executable));
-  fireEvent.change(screen.getByLabelText('CLI executable'), { target: { value: 'C:\\Test\\Codex\\bin\\' } });
-  fireEvent.click(screen.getByText('Connect melalui CLI'));
+it('uses a manual executable to open CLI sign-in without saving the profile', async () => {
+  open(/Codex CLI/);
+  fireEvent.change(screen.getByLabelText(/Binary path/), { target: { value: path } });
+  fireEvent.click(screen.getByRole('button', { name: 'Buka login CLI' }));
   await screen.findByText('Login CLI dibuka');
-  expect(operations).toEqual(['save', 'connect']);
-  expect((screen.getByLabelText('CLI executable') as HTMLInputElement).value).toBe(executable);
-});
-
-it('saves the current provider configuration before requesting models', async () => {
-  render(<AISettingsModal isOpen onClose={() => {}} />);
-  await waitFor(() => expect((screen.getByLabelText('CLI executable') as HTMLInputElement).value).toBe(executable));
-  fireEvent.click(screen.getByText('Muat model'));
-  await screen.findByText('1 model tersedia');
-  expect(operations).toEqual(['save', 'models']);
-});
-
-it('does not open a login process if configuration validation fails', async () => {
-  render(<AISettingsModal isOpen onClose={() => {}} />);
-  await waitFor(() => expect((screen.getByLabelText('CLI executable') as HTMLInputElement).value).toBe(executable));
-  failSave = true;
-  fireEvent.click(screen.getByText('Connect melalui CLI'));
-  await screen.findByText('Path tidak valid');
-  expect(operations).toEqual(['save']);
+  expect(operations).toEqual([{ url: '/api/ai/connect', body: expect.objectContaining({ provider: 'codex', cliPath: path }) }]);
+  expect(saved).not.toHaveBeenCalled();
 });

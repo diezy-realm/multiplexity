@@ -12,6 +12,7 @@ interface Connector {
   baseUrl: string;
   enabled: boolean;
   hasToken: boolean;
+  hasCa: boolean;
   lastStatus: string;
   lastVersion: string;
 }
@@ -25,13 +26,17 @@ interface McpServer {
   tools: { name: string; description?: string }[];
 }
 
-export default function IntegrationsSettings() {
+export default function IntegrationsSettings({ initialKind = 'bamboo', kinds, onlyMcp = false }: { initialKind?: ConnectorKind; kinds?: readonly ConnectorKind[]; onlyMcp?: boolean }) {
   const [connectors, setConnectors] = useState<Connector[]>([]);
-  const [kind, setKind] = useState<ConnectorKind>('bamboo');
+  const [kind, setKind] = useState<ConnectorKind>(kinds?.[0] ?? initialKind);
   const [label, setLabel] = useState('');
   const [baseUrl, setBaseUrl] = useState('');
   const [token, setToken] = useState('');
+  const scm = kind === 'ghes' || kind === 'bitbucket';
   const [insecureTls, setInsecureTls] = useState(false);
+  const [editing, setEditing] = useState<Connector | null>(null);
+  const [caPem, setCaPem] = useState('');
+  const [removeCa, setRemoveCa] = useState(false);
 
   const [mcpServers, setMcpServers] = useState<McpServer[]>([]);
   const [mcpLabel, setMcpLabel] = useState('');
@@ -43,16 +48,16 @@ export default function IntegrationsSettings() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
-    const [cRes, mRes] = await Promise.all([fetch('/api/connectors'), fetch('/api/mcp')]);
-    if (cRes.ok) {
+    const [cRes, mRes] = await Promise.all([!onlyMcp ? fetch('/api/connectors') : null, (!kinds || onlyMcp) ? fetch('/api/mcp') : null]);
+    if (cRes?.ok) {
       const data = await cRes.json();
       setConnectors(data.connectors || []);
     }
-    if (mRes.ok) {
+    if (mRes?.ok) {
       const data = await mRes.json();
       setMcpServers(data.servers || []);
     }
-  }, []);
+  }, [kinds, onlyMcp]);
 
   useEffect(() => {
     void load();
@@ -66,20 +71,41 @@ export default function IntegrationsSettings() {
       const res = await fetch('/api/connectors', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ kind, label, baseUrl, token, insecureTls }),
+        body: JSON.stringify({
+          id: editing?.id, kind, label, baseUrl, token, insecureTls: scm ? false : insecureTls,
+          caPem: scm && (removeCa || caPem.trim()) ? (removeCa ? '' : caPem) : undefined,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Gagal menyimpan konektor.');
-      setLabel('');
-      setBaseUrl('');
-      setToken('');
+      resetConnector();
       setMessage('Konektor tersimpan terenkripsi.');
       await load();
+      window.dispatchEvent(new Event("library-apps-changed"));
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Gagal menyimpan konektor.');
     } finally {
       setBusy(false);
     }
+  }
+
+  function resetConnector() {
+    setEditing(null);
+    setLabel('');
+    setBaseUrl('');
+    setToken('');
+    setCaPem('');
+    setRemoveCa(false);
+  }
+
+  function editScm(connector: Connector) {
+    resetConnector();
+    setKind(connector.kind);
+    setEditing(connector);
+    setLabel(connector.label);
+    setBaseUrl(connector.baseUrl);
+    document.getElementById('enterprise-connector-form')?.scrollIntoView({ block: 'nearest' });
+    document.getElementById('enterprise-connector-label')?.focus({ preventScroll: true });
   }
 
   async function testConn(id: string) {
@@ -91,6 +117,7 @@ export default function IntegrationsSettings() {
       if (!res.ok) throw new Error(data.error || 'Uji koneksi gagal.');
       setMessage(`${data.message}${data.version ? ` (v${data.version})` : ''}`);
       await load();
+      window.dispatchEvent(new Event("library-apps-changed"));
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Uji koneksi gagal.');
     } finally {
@@ -100,13 +127,18 @@ export default function IntegrationsSettings() {
 
   async function toggle(conn: Connector) {
     setBusy(true);
+    setMessage('');
     try {
-      await fetch(`/api/connectors/${encodeURIComponent(conn.id)}`, {
+      const response = await fetch(`/api/connectors/${encodeURIComponent(conn.id)}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: !conn.enabled }),
       });
+      if (!response.ok) throw new Error((await response.json()).error || 'Status konektor gagal diperbarui.');
       await load();
+      window.dispatchEvent(new Event("library-apps-changed"));
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : 'Status konektor gagal diperbarui.');
     } finally {
       setBusy(false);
     }
@@ -117,6 +149,7 @@ export default function IntegrationsSettings() {
     try {
       await fetch(`/api/connectors/${encodeURIComponent(id)}`, { method: 'DELETE' });
       await load();
+      window.dispatchEvent(new Event("library-apps-changed"));
     } finally {
       setBusy(false);
     }
@@ -139,6 +172,7 @@ export default function IntegrationsSettings() {
       setMcpToken('');
       setMessage('Server MCP read-only tersimpan.');
       await load();
+      window.dispatchEvent(new Event("library-apps-changed"));
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Gagal menyimpan MCP.');
     } finally {
@@ -155,6 +189,7 @@ export default function IntegrationsSettings() {
       if (!res.ok) throw new Error(data.error || 'Probe MCP gagal.');
       setMessage(`MCP ${data.status} (${(data.tools || []).length} tools)`);
       await load();
+      window.dispatchEvent(new Event("library-apps-changed"));
     } catch (err) {
       setMessage(err instanceof Error ? err.message : 'Probe MCP gagal.');
     } finally {
@@ -167,6 +202,7 @@ export default function IntegrationsSettings() {
     try {
       await fetch(`/api/mcp/${encodeURIComponent(id)}`, { method: 'DELETE' });
       await load();
+      window.dispatchEvent(new Event("library-apps-changed"));
     } finally {
       setBusy(false);
     }
@@ -174,47 +210,56 @@ export default function IntegrationsSettings() {
 
   return (
     <div className="space-y-5 text-xs">
-      <form onSubmit={(e) => void saveConnector(e)} className="rounded-xl border border-[var(--ui-border)] p-3 space-y-2.5">
-        <div className="font-semibold">Konektor Enterprise (Token Terenkripsi Lokal)</div>
+      {!onlyMcp && <form id="enterprise-connector-form" onSubmit={(e) => void saveConnector(e)} className="rounded-xl border border-[var(--ui-border)] p-3 space-y-2.5">
+        <div className="font-semibold">{editing ? 'Edit profil ' + (kind === 'ghes' ? 'GitHub Enterprise' : 'Bitbucket Data Center') : 'Konektor Enterprise (Token Terenkripsi Lokal)'}</div>
         <div className="grid grid-cols-2 gap-2">
           <label className="block">
             Jenis
-            <Select value={kind} onChange={(e) => setKind(e.target.value as ConnectorKind)} aria-label="Jenis konektor">
-              <option value="bamboo">Bamboo Data Center</option>
-              <option value="sonarqube">SonarQube Server</option>
-              <option value="jira">Jira Data Center</option>
-              <option value="bitbucket">Bitbucket Data Center</option>
-              <option value="ghes">GitHub Enterprise Server</option>
-              <option value="checkmarx">Checkmarx / SCA</option>
-              <option value="confluent">Confluent Metadata</option>
+            <Select value={kind} disabled={!!editing} onChange={(e) => setKind(e.target.value as ConnectorKind)} aria-label="Jenis konektor">
+              {(!kinds || kinds.includes("bamboo")) && <option value="bamboo">Bamboo Data Center</option>}
+              {(!kinds || kinds.includes("sonarqube")) && <option value="sonarqube">SonarQube Server</option>}
+              {(!kinds || kinds.includes("jira")) && <option value="jira">Jira Data Center</option>}
+              {(!kinds || kinds.includes("bitbucket")) && <option value="bitbucket">Bitbucket Data Center</option>}
+              {(!kinds || kinds.includes("ghes")) && <option value="ghes">GitHub Enterprise Server</option>}
+              {(!kinds || kinds.includes("checkmarx")) && <option value="checkmarx">Checkmarx / SCA</option>}
+              {(!kinds || kinds.includes("confluent")) && <option value="confluent">Confluent Metadata</option>}
             </Select>
           </label>
           <label className="block">
             Label
-            <input className="ui-field w-full mt-1" required value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Bamboo Pilot" />
+            <input id="enterprise-connector-label" className="ui-field w-full mt-1" required value={label} onChange={(e) => setLabel(e.target.value)} placeholder={kind === 'ghes' ? 'GitHub Enterprise' : kind === 'bitbucket' ? 'Bitbucket Data Center' : 'Bamboo Pilot'} />
           </label>
         </div>
         <label className="block">
           Base URL
-          <input className="ui-field w-full mt-1 font-mono" required value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://host.internal" />
+          <input className="ui-field w-full mt-1 font-mono" required value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder={kind === 'bitbucket' ? 'https://git.internal/bitbucket' : 'https://host.internal'} />
         </label>
         <label className="block">
-          Token Akses
-          <input className="ui-field w-full mt-1 font-mono" type="password" required value={token} onChange={(e) => setToken(e.target.value)} />
+          {kind === 'bitbucket' ? 'Personal HTTP access token (PAT)' : 'Token Akses'}
+          <input className="ui-field w-full mt-1 font-mono" type="password" autoComplete="new-password" required={!editing || editing.baseUrl !== baseUrl.trim()} value={token} onChange={(e) => setToken(e.target.value)} placeholder={editing ? 'Kosongkan untuk mempertahankan token' : undefined} />
         </label>
-        <label className="inline-flex items-center gap-2">
+        {scm ? <>
+          <p className="opacity-80">{kind === 'bitbucket' ? 'Gunakan base URL HTTPS Bitbucket (termasuk path instalasi) dan PAT personal dengan izin Repository read. Aktifkan satu profil Bitbucket untuk Code Review.' : 'Gunakan origin HTTPS dan token dengan izin baca Pull requests, Checks, dan Commit statuses untuk repo yang direview.'}</p>
+          <label className="block">CA perusahaan (PEM, opsional)
+            <textarea className="ui-field w-full mt-1 font-mono" rows={3} maxLength={32768} value={caPem} disabled={removeCa}
+              placeholder={editing?.hasCa ? 'Kosongkan untuk mempertahankan CA' : '-----BEGIN CERTIFICATE-----'}
+              onChange={(event) => setCaPem(event.target.value)} />
+          </label>
+          {editing?.hasCa && <label className="flex items-center gap-2"><input type="checkbox" checked={removeCa} onChange={event => setRemoveCa(event.target.checked)} />Hapus CA tambahan</label>}
+        </> : <label className="inline-flex items-center gap-2">
           <input type="checkbox" checked={insecureTls} onChange={(e) => setInsecureTls(e.target.checked)} />
           <span>Izinkan sertifikat TLS lab/internal</span>
-        </label>
-        <div>
-          <button type="submit" className="ui-button" disabled={busy}>Simpan Konektor</button>
+        </label>}
+        <div className="flex gap-2">
+          <button type="submit" className="ui-button" disabled={busy}>{editing ? 'Simpan Perubahan' : 'Simpan Konektor'}</button>
+          {editing && <button type="button" className="ui-button" onClick={resetConnector}>Batal</button>}
         </div>
-      </form>
+      </form>}
 
       {message && <p role="status" className="opacity-85">{message}</p>}
 
       <div className="space-y-2">
-        {connectors.map((c) => (
+        {connectors.filter(c => !kinds || kinds.includes(c.kind)).map((c) => (
           <div key={c.id} className="rounded-xl border border-[var(--ui-border)] p-3 flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="font-semibold flex items-center gap-1.5">
@@ -230,11 +275,12 @@ export default function IntegrationsSettings() {
               </div>
             </div>
             <div className="flex items-center gap-1.5">
+              {(c.kind === 'ghes' || c.kind === 'bitbucket') && <button type="button" className="ui-button" disabled={busy} onClick={() => editScm(c)}>Edit</button>}
               <button type="button" className="ui-button" disabled={busy || !c.enabled} onClick={() => void testConn(c.id)}>Uji</button>
-              <button type="button" className="icon-action" aria-label={c.enabled ? 'Nonaktifkan konektor' : 'Aktifkan konektor'} onClick={() => void toggle(c)}>
+              <button type="button" className="icon-action" disabled={busy} aria-label={c.enabled ? 'Nonaktifkan konektor' : 'Aktifkan konektor'} onClick={() => void toggle(c)}>
                 <Power size={14} aria-hidden="true" />
               </button>
-              <button type="button" className="icon-action" aria-label="Hapus konektor" onClick={() => void remove(c.id)}>
+              <button type="button" className="icon-action" disabled={busy} aria-label="Hapus konektor" onClick={() => void remove(c.id)}>
                 <Trash2 size={14} aria-hidden="true" />
               </button>
             </div>
@@ -242,7 +288,7 @@ export default function IntegrationsSettings() {
         ))}
       </div>
 
-      <form onSubmit={(e) => void saveMcp(e)} className="rounded-xl border border-[var(--ui-border)] p-3 space-y-2.5">
+      {(!kinds || onlyMcp) && <form onSubmit={(e) => void saveMcp(e)} className="rounded-xl border border-[var(--ui-border)] p-3 space-y-2.5">
         <div className="font-semibold">MCP Read-Only Server (Ekstensi Internal)</div>
         <div className="grid grid-cols-2 gap-2">
           <label className="block">
@@ -266,7 +312,7 @@ export default function IntegrationsSettings() {
           <input className="ui-field w-full mt-1 font-mono" type="password" value={mcpToken} onChange={(e) => setMcpToken(e.target.value)} />
         </label>
         <button type="submit" className="ui-button" disabled={busy}>Tambah MCP</button>
-      </form>
+      </form>}
 
       {mcpServers.length > 0 && (
         <div className="space-y-2">
